@@ -1,3 +1,4 @@
+ HEAD
 # Project ZERO
 
 An autonomous, terminal-first, approval-gated AI business and customer-acquisition agent.
@@ -25,3 +26,7 @@ python -m zero.cli status
 # Run automated tests
 pytest -v
 ```
+=======
+# Project---ZERO-
+Project ZERO is an AI-powered, human-supervised business agent designed to research markets, identify profitable opportunities, validate demand, discover potential customers. Its goal is to turn business objectives into measurable outcomes and acquire paying customers through evidence-based decisions and controlled autonomy.
+>>>>>>> 2c17ca75fe45c17c272fec77ec41a8b19cfcba74
