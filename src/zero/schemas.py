@@ -21,7 +21,16 @@ class EvidenceType(str, Enum):
 
 
 class Evidence(BaseModel):
-    """A discrete unit of market or customer evidence."""
+    """
+    A discrete unit of market or customer evidence.
+
+    NOTE ON SOURCE VERIFICATION LIMITATION:
+    In Stage A, the system validates that a VERIFIED_SOURCE record contains a syntactically
+    valid http/https URL citation. Under the offline INR 0 budget boundary, the system does NOT
+    fetch remote web pages or execute automated claim-entailment to verify that the external
+    document content proves the asserted claim. Evidence validation confirms citation format,
+    not remote ground-truth verification.
+    """
     id: str = Field(..., description="Unique evidence ID (e.g. ev_12345678)")
     claim: str = Field(..., min_length=5, description="Clear, concise claim about market need or buyer behavior")
     evidence_type: EvidenceType = Field(..., description="Classification of evidence reliability")

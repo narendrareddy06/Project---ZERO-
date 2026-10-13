@@ -357,3 +357,17 @@ def test_sample_offer_has_sample_flag_and_disclaimer(sample_india_offer_and_evid
     assert result.status == DecisionStatus.SELECTED
     assert any("[DEMONSTRATION SAMPLE ONLY]" in r for r in result.reasons)
 
+
+def test_production_offer_cannot_use_sample_evidence(sample_india_offer_and_evidence):
+    """A production offer (is_sample=False) cannot use sample evidence (is_sample=True) to qualify."""
+    offer, evidence, scores = sample_india_offer_and_evidence
+    offer.is_sample = False  # Production offer
+    evidence[0].is_sample = True  # Sample evidence
+
+    evaluator = OfferEvaluator()
+    result = evaluator.evaluate(offer, scores, evidence)
+
+    assert result.status == DecisionStatus.NEEDS_MORE_EVIDENCE
+    assert any("Production offer cannot use sample/demonstration evidence" in m for m in result.missing_or_invalid_evidence_ids)
+
+

@@ -35,6 +35,7 @@ def seed_demo_data():
 
     # 1. Indian Market Evidence (Verified and User-Provided)
     ev_in_1 = service.record_evidence(
+        evidence_id="ev_demo_in_01",
         claim="[SAMPLE] Indian D2C brands experience 20-30% Return-to-Origin (RTO) loss on Cash-on-Delivery shipments.",
         evidence_type=EvidenceType.VERIFIED_SOURCE,
         geography=Geography.IN,
@@ -44,6 +45,7 @@ def seed_demo_data():
         is_sample=True,
     )
     ev_in_2 = service.record_evidence(
+        evidence_id="ev_demo_in_02",
         claim="[SAMPLE] Indian D2C brands actively spend INR 10k-30k/month on WhatsApp verification and Shopify plugins.",
         evidence_type=EvidenceType.VERIFIED_SOURCE,
         geography=Geography.IN,
@@ -53,6 +55,7 @@ def seed_demo_data():
         is_sample=True,
     )
     ev_in_3 = service.record_evidence(
+        evidence_id="ev_demo_in_03",
         claim="[SAMPLE] Founder contacts and operations leads are accessible via public website listings and business registries.",
         evidence_type=EvidenceType.USER_PROVIDED,
         geography=Geography.IN,
@@ -63,6 +66,7 @@ def seed_demo_data():
 
     # 2. US Market Evidence
     ev_us_1 = service.record_evidence(
+        evidence_id="ev_demo_us_01",
         claim="[SAMPLE] US specialty subcontractors face 30-day payment delays due to manual AIA G702 billing preparation.",
         evidence_type=EvidenceType.VERIFIED_SOURCE,
         geography=Geography.US,
@@ -72,6 +76,7 @@ def seed_demo_data():
         is_sample=True,
     )
     ev_us_2 = service.record_evidence(
+        evidence_id="ev_demo_us_02",
         claim="[SAMPLE] US trade contractors pay $200-$600/month for specialized construction accounting tools.",
         evidence_type=EvidenceType.VERIFIED_SOURCE,
         geography=Geography.US,
@@ -81,6 +86,7 @@ def seed_demo_data():
         is_sample=True,
     )
     ev_us_3 = service.record_evidence(
+        evidence_id="ev_demo_us_03",
         claim="[SAMPLE] Commercial subcontractor office managers are reachable via public state contractor licensing boards.",
         evidence_type=EvidenceType.VERIFIED_SOURCE,
         geography=Geography.US,
@@ -92,6 +98,7 @@ def seed_demo_data():
 
     # 3. Weak / Speculative Evidence (to illustrate NEEDS_MORE_EVIDENCE)
     ev_weak_1 = service.record_evidence(
+        evidence_id="ev_demo_us_spec_01",
         claim="[SAMPLE HYPOTHESIS] Dental clinics might pay for AI voice receptionists without verification.",
         evidence_type=EvidenceType.HYPOTHESIS,
         geography=Geography.US,

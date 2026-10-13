@@ -57,9 +57,6 @@ class OfferEvaluator:
         invalid_evidence_ids: List[str] = []
         reasons: List[str] = []
 
-        # Check if offer or any linked evidence is marked as sample/demonstration data
-        is_sample = offer.is_sample or any(e.is_sample for e in evidence_records)
-
         # 1. Verify that all 5 required criteria are present
         for key in CriterionKey:
             if key not in criterion_scores:
@@ -68,12 +65,20 @@ class OfferEvaluator:
         # 2. Check each criterion's linked evidence
         total_linked_ev_count = 0
         total_ev_confidence = 0.0
+        linked_evidence_all: List[Evidence] = []
 
         for key, c_score in criterion_scores.items():
             linked: List[Evidence] = []
             for eid in c_score.evidence_ids:
                 if eid in evidence_by_id:
-                    linked.append(evidence_by_id[eid])
+                    ev = evidence_by_id[eid]
+                    if not offer.is_sample and ev.is_sample:
+                        invalid_evidence_ids.append(
+                            f"Production offer cannot use sample/demonstration evidence '{eid}' for criterion '{key.value}'"
+                        )
+                    else:
+                        linked.append(ev)
+                        linked_evidence_all.append(ev)
                 else:
                     invalid_evidence_ids.append(
                         f"Criterion '{key.value}' references nonexistent evidence ID '{eid}'"
@@ -114,6 +119,7 @@ class OfferEvaluator:
         avg_confidence = (
             total_ev_confidence / total_linked_ev_count if total_linked_ev_count > 0 else 0.0
         )
+        is_sample = offer.is_sample or any(e.is_sample for e in linked_evidence_all)
 
         # 3. Calculate deterministic weighted score
         weighted_score = sum(

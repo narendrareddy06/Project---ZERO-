@@ -21,16 +21,18 @@ class EvidenceService:
         notes: str = "",
         actor: str = "USER",
         is_sample: bool = False,
+        evidence_id: Optional[str] = None,
     ) -> Evidence:
         """Create and persist a new validated evidence item."""
-        # Generate stable ID with sequence
-        cursor = self.db.get_connection().cursor()
-        cursor.execute("SELECT COUNT(*) as cnt FROM evidence")
-        count = cursor.fetchone()["cnt"] + 1
-        ev_id = f"ev_{count:04d}"
+        if not evidence_id:
+            # Generate stable ID with sequence
+            cursor = self.db.get_connection().cursor()
+            cursor.execute("SELECT COUNT(*) as cnt FROM evidence")
+            count = cursor.fetchone()["cnt"] + 1
+            evidence_id = f"ev_{count:04d}"
 
         evidence = Evidence(
-            id=ev_id,
+            id=evidence_id,
             claim=claim,
             evidence_type=evidence_type,
             geography=geography,
