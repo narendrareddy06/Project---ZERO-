@@ -45,12 +45,27 @@ def handle_status(args):
     cursor.execute("SELECT * FROM runs ORDER BY started_at DESC LIMIT 1")
     latest_run = cursor.fetchone()
 
-    # Evidence stats
-    cursor.execute("SELECT evidence_type, geography, COUNT(*) as cnt FROM evidence GROUP BY evidence_type, geography")
+    # Evidence stats distinguishing production from sample data
+    cursor.execute("""
+        SELECT 
+            evidence_type, 
+            geography, 
+            CASE WHEN is_sample = 1 THEN 'SAMPLE (DEMO)' ELSE 'PRODUCTION' END as origin,
+            COUNT(*) as cnt 
+        FROM evidence 
+        GROUP BY evidence_type, geography, is_sample
+    """)
     ev_stats = cursor.fetchall()
 
-    # Offer stats
-    cursor.execute("SELECT target_geography, COUNT(*) as cnt FROM offers GROUP BY target_geography")
+    # Offer stats distinguishing production from sample data
+    cursor.execute("""
+        SELECT 
+            target_geography, 
+            CASE WHEN is_sample = 1 THEN 'SAMPLE (DEMO)' ELSE 'PRODUCTION' END as origin,
+            COUNT(*) as cnt 
+        FROM offers 
+        GROUP BY target_geography, is_sample
+    """)
     offer_stats = cursor.fetchall()
 
     # Audit chain verification
@@ -67,11 +82,17 @@ def handle_status(args):
     info_table.add_column("Property", style="dim")
     info_table.add_column("Value")
     info_table.add_row("Database Path", str(db.db_path))
-    info_table.add_row("Current Stage", latest_run["current_stage"] if latest_run else "PREFLIGHT (Stage A)")
-    info_table.add_row("Run Status", latest_run["status"] if latest_run else "NO ACTIVE RUN")
+
+    run_stage = latest_run["current_stage"] if latest_run else "PREFLIGHT (Stage A)"
+    run_status = latest_run["status"] if latest_run else "NO ACTIVE RUN"
+    if latest_run and (latest_run["is_sample"] or "SAMPLE" in latest_run["status"] or "DEMO" in latest_run["status"]):
+        run_status = f"{run_status} [yellow](DEMO SIMULATION ONLY - NO REAL MARKET RESEARCH COMPLETED)[/yellow]"
+
+    info_table.add_row("Current Stage", run_stage)
+    info_table.add_row("Run Status", run_status)
     info_table.add_row("Operating Budget Target", "INR 0.00")
     info_table.add_row("Actual Budget Spent", f"INR {budget_spent:.2f}")
-    info_table.add_row("Confidence Threshold", f"{CONFIDENCE_THRESHOLD:.2f}")
+    info_table.add_row("Confidence Threshold (Heuristic)", f"{CONFIDENCE_THRESHOLD:.2f}")
     info_table.add_row(
         "Audit Log Integrity",
         f"[green]{msg}[/green]" if is_valid else f"[bold red]TAMPERED at seq {failure_seq}: {msg}[/bold red]",
@@ -80,25 +101,29 @@ def handle_status(args):
 
     # Evidence breakdown table
     ev_table = Table(title="Evidence Repository Breakdown", show_header=True, header_style="bold blue")
+    ev_table.add_column("Origin", style="bold")
     ev_table.add_column("Reliability Type")
     ev_table.add_column("Geography")
     ev_table.add_column("Count", justify="right")
     if ev_stats:
         for r in ev_stats:
-            ev_table.add_row(r["evidence_type"], r["geography"], str(r["cnt"]))
+            origin_style = "yellow" if "SAMPLE" in r["origin"] else "green"
+            ev_table.add_row(f"[{origin_style}]{r['origin']}[/{origin_style}]", r["evidence_type"], r["geography"], str(r["cnt"]))
     else:
-        ev_table.add_row("No evidence recorded yet", "-", "0")
+        ev_table.add_row("-", "No evidence recorded yet", "-", "0")
     console.print(ev_table)
 
     # Offer candidates table
     off_table = Table(title="Offer Candidates Stored", show_header=True, header_style="bold yellow")
+    off_table.add_column("Origin", style="bold")
     off_table.add_column("Geography")
     off_table.add_column("Candidate Count", justify="right")
     if offer_stats:
         for r in offer_stats:
-            off_table.add_row(r["target_geography"], str(r["cnt"]))
+            origin_style = "yellow" if "SAMPLE" in r["origin"] else "green"
+            off_table.add_row(f"[{origin_style}]{r['origin']}[/{origin_style}]", r["target_geography"], str(r["cnt"]))
     else:
-        off_table.add_row("No offers recorded yet", "0")
+        off_table.add_row("-", "No offers recorded yet", "0")
     console.print(off_table)
 
 
@@ -138,8 +163,10 @@ def handle_research(args):
                 source_url=args.url,
                 notes=args.notes or "",
                 actor="USER",
+                is_sample=args.sample,
             )
-            console.print(f"[green][OK] Recorded evidence [{ev.id}] ({ev.evidence_type.value}, {ev.geography.value}, conf={ev.confidence:.2f})[/green]")
+            origin_tag = "[yellow][SAMPLE][/yellow] " if ev.is_sample else ""
+            console.print(f"[green][OK] Recorded evidence {origin_tag}[{ev.id}] ({ev.evidence_type.value}, {ev.geography.value}, conf={ev.confidence:.2f})[/green]")
         except Exception as e:
             console.print(f"[bold red]Validation Error: {e}[/bold red]")
 
@@ -150,6 +177,7 @@ def handle_research(args):
 
         table = Table(title=f"Market Evidence ({len(evidence_list)} items)", show_header=True, header_style="bold cyan")
         table.add_column("ID", style="bold")
+        table.add_column("Origin")
         table.add_column("Geo", justify="center")
         table.add_column("Type")
         table.add_column("Conf", justify="right")
@@ -158,8 +186,10 @@ def handle_research(args):
 
         for ev in evidence_list:
             color = "green" if ev.evidence_type == EvidenceType.VERIFIED_SOURCE else "yellow" if ev.evidence_type == EvidenceType.USER_PROVIDED else "magenta"
+            origin_label = "[yellow]SAMPLE[/yellow]" if ev.is_sample else "[green]PROD[/green]"
             table.add_row(
                 ev.id,
+                origin_label,
                 ev.geography.value,
                 f"[{color}]{ev.evidence_type.value}[/{color}]",
                 f"{ev.confidence:.2f}",
@@ -180,6 +210,7 @@ def handle_evaluate(args):
 
         table = Table(title=f"Candidate Business Offers ({len(offers)} offers)", show_header=True, header_style="bold green")
         table.add_column("ID", style="bold")
+        table.add_column("Origin")
         table.add_column("Geo", justify="center")
         table.add_column("Title")
         table.add_column("Target Buyer")
@@ -187,15 +218,21 @@ def handle_evaluate(args):
         table.add_column("Score", justify="right")
 
         for off in offers:
+            origin_label = "[yellow]SAMPLE[/yellow]" if off.is_sample else "[green]PROD[/green]"
             status_str = "PENDING"
             score_str = "-"
             if off.evaluation:
-                status_color = "green" if off.evaluation.status == DecisionStatus.SELECTED else "red" if off.evaluation.status == DecisionStatus.REJECTED else "yellow"
-                status_str = f"[{status_color}]{off.evaluation.status.value}[/{status_color}]"
+                if off.evaluation.status == DecisionStatus.SELECTED:
+                    status_str = "[yellow]SELECTED (DEMO)[/yellow]" if off.is_sample else "[green]SELECTED[/green]"
+                elif off.evaluation.status == DecisionStatus.REJECTED:
+                    status_str = "[red]REJECTED[/red]"
+                else:
+                    status_str = "[yellow]NEEDS_MORE_EVIDENCE[/yellow]"
                 score_str = f"{off.evaluation.weighted_score:.2f}/5.0"
 
             table.add_row(
                 off.id,
+                origin_label,
                 off.target_geography.value,
                 off.title,
                 off.buyer_profile[:40] + ("..." if len(off.buyer_profile) > 40 else ""),
@@ -213,7 +250,11 @@ def handle_evaluate(args):
             console.print(f"[red]Offer not found: {args.offer_id}[/red]")
             return
 
+        if off.is_sample:
+            console.print(Panel("[bold yellow]NOTICE: This offer is synthetic demonstration/sample data. It is NOT a validated real-world market recommendation.[/bold yellow]", border_style="yellow"))
+
         console.print(Panel.fit(f"[bold]{off.title}[/bold] ({off.id})", border_style="green"))
+        console.print(f"[bold]Data Origin:[/bold] {'[yellow]SAMPLE (DEMONSTRATION)[/yellow]' if off.is_sample else '[green]PRODUCTION[/green]'}")
         console.print(f"[bold]Target Geography:[/bold] {off.target_geography.value}")
         console.print(f"[bold]Target Buyer:[/bold] {off.buyer_profile}")
         console.print(f"[bold]Problem Statement:[/bold] {off.problem_statement}")
@@ -279,6 +320,7 @@ def build_parser() -> argparse.ArgumentParser:
     res_add.add_argument("--confidence", required=True, type=float, help="Confidence from 0.0 to 1.0")
     res_add.add_argument("--url", help="Public source URL if verified")
     res_add.add_argument("--notes", help="Context or caveats")
+    res_add.add_argument("--sample", action="store_true", default=False, help="Explicitly mark as demonstration/sample data")
 
     # zero evaluate
     eval_parser = subparsers.add_parser("evaluate", help="Inspect and evaluate offer candidates")

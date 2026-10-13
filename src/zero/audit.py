@@ -1,4 +1,16 @@
-"""Tamper-evident audit logging with cryptographic hash-chaining."""
+"""
+Tamper-evident audit logging with cryptographic hash-chaining.
+
+Security & Threat Model:
+- Scope: Provides internal tamper-detection against localized, accidental, or runtime data tampering
+  (e.g., ad-hoc SQL modifications, deleted rows, payload edits, or out-of-order inserts).
+- Limitations: Because the hash chain is stored entirely in the local SQLite database alongside the
+  application data without an external immutable trust anchor (such as remote syslog, WORM storage,
+  or an external cryptographic signing key/notary), an adversary with direct, unrestricted write access
+  to the SQLite database file could theoretically recompute the entire chain from the genesis block.
+  Therefore, this mechanism provides tamper-evidence against accidental modification and localized tampering,
+  NOT cryptographic non-repudiation against an adversary with arbitrary filesystem write access.
+"""
 
 import hashlib
 import json

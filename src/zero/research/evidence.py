@@ -20,6 +20,7 @@ class EvidenceService:
         source_url: Optional[str] = None,
         notes: str = "",
         actor: str = "USER",
+        is_sample: bool = False,
     ) -> Evidence:
         """Create and persist a new validated evidence item."""
         # Generate stable ID with sequence
@@ -36,6 +37,7 @@ class EvidenceService:
             confidence=confidence,
             source_url=source_url,
             notes=notes,
+            is_sample=is_sample,
         )
 
         return self.db.save_evidence(evidence, actor=actor)

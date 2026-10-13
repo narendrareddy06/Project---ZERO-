@@ -26,15 +26,20 @@ class Evidence(BaseModel):
     claim: str = Field(..., min_length=5, description="Clear, concise claim about market need or buyer behavior")
     evidence_type: EvidenceType = Field(..., description="Classification of evidence reliability")
     geography: Geography = Field(..., description="Applicable market geography")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score from 0.0 (speculative) to 1.0 (verified)")
+    confidence: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Qualitative heuristic assessment score from 0.0 (speculative) to 1.0 (verified). Represents evidence rigor, NOT an empirical probability of commercial success.",
+    )
     source_url: Optional[str] = Field(None, description="Public URL or source identifier if verified")
     captured_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="UTC timestamp when captured")
     notes: Optional[str] = Field("", description="Supporting context, caveats, or contradictions")
+    is_sample: bool = Field(default=False, description="Whether this record is synthetic demonstration/sample data")
 
     @field_validator("source_url")
     @classmethod
     def validate_source_url_for_verified_evidence(cls, v: Optional[str], info) -> Optional[str]:
-        # Note: In Pydantic v2, other fields are accessed via info.data
         return v
 
     @model_validator(mode="after")
@@ -42,6 +47,10 @@ class Evidence(BaseModel):
         if self.evidence_type == EvidenceType.VERIFIED_SOURCE:
             if not self.source_url or not (self.source_url.startswith("http://") or self.source_url.startswith("https://")):
                 raise ValueError("VERIFIED_SOURCE evidence must have a valid http/https source_url")
+        if self.evidence_type == EvidenceType.HYPOTHESIS and self.confidence > 0.50:
+            raise ValueError(
+                f"HYPOTHESIS evidence confidence cannot exceed 0.50 (got {self.confidence:.2f}); unverified assumptions must remain <= 0.50"
+            )
         return self
 
 
@@ -96,6 +105,8 @@ class EvaluationResult(BaseModel):
     reasons: List[str] = Field(default_factory=list, description="Summary reasons for decision")
     missing_evidence_criteria: List[str] = Field(default_factory=list, description="Criteria lacking sufficient evidence")
     contradictions_found: List[str] = Field(default_factory=list, description="Unresolved contradictions detected")
+    missing_or_invalid_evidence_ids: List[str] = Field(default_factory=list, description="Referenced evidence IDs not found in repository")
+    is_sample: bool = Field(default=False, description="Whether this evaluation applies to synthetic demonstration/sample data")
 
 
 class OfferCandidate(BaseModel):
@@ -107,10 +118,11 @@ class OfferCandidate(BaseModel):
     problem_statement: str = Field(..., min_length=10, description="Concrete problem being addressed")
     proposed_deliverable: str = Field(..., min_length=10, description="Specific pilot deliverable")
     plausible_pricing_or_pilot: str = Field(..., min_length=5, description="Proposed pilot structure or pricing")
-    delivery_method: str = Field(..., min_length=5, description="How the pilot is fulfilled remotely at ₹0 cost")
+    delivery_method: str = Field(..., min_length=5, description="How the pilot is fulfilled remotely at INR 0 cost")
     risks: List[str] = Field(default_factory=list, description="Identified risks or challenges")
     evidence_ids: List[str] = Field(default_factory=list, description="Linked evidence IDs")
     evaluation: Optional[EvaluationResult] = None
+    is_sample: bool = Field(default=False, description="Whether this offer candidate is synthetic demonstration/sample data")
 
 
 class RunState(str, Enum):
@@ -144,6 +156,7 @@ class Run(BaseModel):
     current_stage: RunState = RunState.CREATED
     status: str = "INITIALIZED"
     budget_spent_inr: float = 0.0
+    is_sample: bool = Field(default=False, description="Whether this run is an isolated demonstration/simulation")
 
 
 class AuditEvent(BaseModel):

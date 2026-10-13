@@ -83,7 +83,7 @@ def test_evidence_confidence_bounds():
         Evidence(
             id="ev_005",
             claim="Sample claim about market demand",
-            evidence_type=EvidenceType.HYPOTHESIS,
+            evidence_type=EvidenceType.USER_PROVIDED,
             geography=Geography.US,
             confidence=1.2,  # > 1.0
         )
@@ -92,10 +92,34 @@ def test_evidence_confidence_bounds():
         Evidence(
             id="ev_006",
             claim="Sample claim about market demand",
-            evidence_type=EvidenceType.HYPOTHESIS,
+            evidence_type=EvidenceType.USER_PROVIDED,
             geography=Geography.US,
             confidence=-0.1,  # < 0.0
         )
+
+
+def test_hypothesis_confidence_capped_at_half():
+    """Hypotheses cannot claim confidence > 0.50 (must remain speculative bounds)."""
+    # 0.40 succeeds
+    ev = Evidence(
+        id="ev_hyp_ok",
+        claim="Working assumption about prospect response",
+        evidence_type=EvidenceType.HYPOTHESIS,
+        geography=Geography.IN,
+        confidence=0.40,
+    )
+    assert ev.confidence == 0.40
+
+    # 0.55 fails
+    with pytest.raises(ValidationError) as exc_info:
+        Evidence(
+            id="ev_hyp_fail",
+            claim="Hypothesis pretending to be high certainty",
+            evidence_type=EvidenceType.HYPOTHESIS,
+            geography=Geography.IN,
+            confidence=0.55,
+        )
+    assert "HYPOTHESIS evidence confidence cannot exceed 0.50" in str(exc_info.value)
 
 
 def test_criterion_score_valid_weights():

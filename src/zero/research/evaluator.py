@@ -26,6 +26,11 @@ class OfferEvaluator:
     - Buyer accessibility: 20% (0.20)
     - Delivery feasibility: 20% (0.20)
     - 72-hour sales-cycle feasibility: 10% (0.10)
+
+    NOTE ON CONFIDENCE THRESHOLD:
+    The default threshold (0.65) is an operational heuristic filter to gate incomplete
+    or unverified information. It is NOT an empirically calibrated or actuarially measured
+    probability of commercial success or customer conversion.
     """
 
     def __init__(
@@ -49,7 +54,11 @@ class OfferEvaluator:
         evidence_by_id: Dict[str, Evidence] = {e.id: e for e in evidence_records}
         missing_evidence_criteria: List[str] = []
         contradictions_found: List[str] = []
+        invalid_evidence_ids: List[str] = []
         reasons: List[str] = []
+
+        # Check if offer or any linked evidence is marked as sample/demonstration data
+        is_sample = offer.is_sample or any(e.is_sample for e in evidence_records)
 
         # 1. Verify that all 5 required criteria are present
         for key in CriterionKey:
@@ -61,12 +70,27 @@ class OfferEvaluator:
         total_ev_confidence = 0.0
 
         for key, c_score in criterion_scores.items():
-            linked = [evidence_by_id[eid] for eid in c_score.evidence_ids if eid in evidence_by_id]
-            
+            linked: List[Evidence] = []
+            for eid in c_score.evidence_ids:
+                if eid in evidence_by_id:
+                    linked.append(evidence_by_id[eid])
+                else:
+                    invalid_evidence_ids.append(
+                        f"Criterion '{key.value}' references nonexistent evidence ID '{eid}'"
+                    )
+
             # Check for missing evidence
             if not linked:
                 missing_evidence_criteria.append(key.value)
                 continue
+
+            # Check if critical criteria rely solely on unverified hypotheses
+            if key in (CriterionKey.PROBLEM_SEVERITY, CriterionKey.WILLINGNESS_TO_PAY):
+                non_hypothesis = [ev for ev in linked if ev.evidence_type != EvidenceType.HYPOTHESIS]
+                if not non_hypothesis:
+                    missing_evidence_criteria.append(
+                        f"{key.value} (relies solely on unverified hypotheses without empirical evidence)"
+                    )
 
             for ev in linked:
                 total_linked_ev_count += 1
@@ -84,7 +108,7 @@ class OfferEvaluator:
                 max_confidence = max((ev.confidence for ev in linked), default=0.0)
                 if max_confidence < self.confidence_threshold:
                     missing_evidence_criteria.append(
-                        f"{key.value} (evidence confidence {max_confidence:.2f} is below threshold {self.confidence_threshold:.2f})"
+                        f"{key.value} (evidence confidence {max_confidence:.2f} is below heuristic threshold {self.confidence_threshold:.2f})"
                     )
 
         avg_confidence = (
@@ -99,7 +123,12 @@ class OfferEvaluator:
         weighted_score = round(weighted_score, 3)
 
         # 4. Determine decision status based on evidence integrity and rubric gates
-        if contradictions_found:
+        if invalid_evidence_ids:
+            status = DecisionStatus.NEEDS_MORE_EVIDENCE
+            reasons.append("Invalid or missing evidence ID references detected.")
+            reasons.extend(invalid_evidence_ids)
+
+        elif contradictions_found:
             status = DecisionStatus.NEEDS_MORE_EVIDENCE
             reasons.append("Unresolved contradictory or disputed evidence detected.")
             reasons.extend(contradictions_found)
@@ -113,7 +142,7 @@ class OfferEvaluator:
         elif avg_confidence < self.confidence_threshold:
             status = DecisionStatus.NEEDS_MORE_EVIDENCE
             reasons.append(
-                f"Average evidence confidence ({avg_confidence:.2f}) is below threshold ({self.confidence_threshold:.2f})."
+                f"Average evidence confidence ({avg_confidence:.2f}) is below heuristic threshold ({self.confidence_threshold:.2f})."
             )
 
         elif (
@@ -123,7 +152,7 @@ class OfferEvaluator:
             status = DecisionStatus.REJECTED
             if criterion_scores[CriterionKey.DELIVERY_FEASIBILITY].score <= 2:
                 reasons.append(
-                    f"Delivery feasibility score is too low ({criterion_scores[CriterionKey.DELIVERY_FEASIBILITY].score}/5) for remote ₹0 execution."
+                    f"Delivery feasibility score is too low ({criterion_scores[CriterionKey.DELIVERY_FEASIBILITY].score}/5) for remote INR 0 execution."
                 )
             if weighted_score < self.min_score:
                 reasons.append(
@@ -132,9 +161,14 @@ class OfferEvaluator:
 
         else:
             status = DecisionStatus.SELECTED
-            reasons.append(
-                f"Qualified with weighted score {weighted_score:.2f}/5.0 and average confidence {avg_confidence:.2f}."
-            )
+            if is_sample:
+                reasons.append(
+                    f"[DEMONSTRATION SAMPLE ONLY] Qualified for simulation/testing with weighted score {weighted_score:.2f}/5.0 and average confidence {avg_confidence:.2f}. Not a validated real-world offer."
+                )
+            else:
+                reasons.append(
+                    f"Qualified with weighted score {weighted_score:.2f}/5.0 and average confidence {avg_confidence:.2f}."
+                )
 
         # Format criterion_scores dictionary with string keys for serialization
         criterion_dict = {k.value: v for k, v in criterion_scores.items()}
@@ -147,4 +181,6 @@ class OfferEvaluator:
             reasons=reasons,
             missing_evidence_criteria=missing_evidence_criteria,
             contradictions_found=contradictions_found,
+            missing_or_invalid_evidence_ids=invalid_evidence_ids,
+            is_sample=is_sample,
         )

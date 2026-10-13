@@ -257,7 +257,7 @@ def test_needs_more_evidence_on_low_confidence(sample_india_offer_and_evidence):
     result = evaluator.evaluate(offer, scores, evidence)
 
     assert result.status == DecisionStatus.NEEDS_MORE_EVIDENCE
-    assert any("below threshold" in r for r in result.reasons)
+    assert any("below heuristic threshold" in r or "below threshold" in r for r in result.reasons)
 
 
 def test_needs_more_evidence_on_unresolved_contradictions(sample_india_offer_and_evidence):
@@ -311,3 +311,49 @@ def test_rejected_on_low_weighted_score(sample_india_offer_and_evidence):
     assert result.weighted_score == 2.0
     assert result.status == DecisionStatus.REJECTED
     assert any("below qualification minimum" in r for r in result.reasons)
+
+
+def test_invalid_evidence_id_triggers_needs_more_evidence(sample_india_offer_and_evidence):
+    """Referencing an evidence ID that does not exist in repository triggers NEEDS_MORE_EVIDENCE."""
+    offer, evidence, scores = sample_india_offer_and_evidence
+    scores[CriterionKey.PROBLEM_SEVERITY].evidence_ids.append("ev_ghost_9999")
+
+    evaluator = OfferEvaluator()
+    result = evaluator.evaluate(offer, scores, evidence)
+
+    assert result.status == DecisionStatus.NEEDS_MORE_EVIDENCE
+    assert any("ev_ghost_9999" in m for m in result.missing_or_invalid_evidence_ids)
+
+
+def test_hypothesis_only_critical_criteria_triggers_needs_more_evidence(sample_india_offer_and_evidence):
+    """Critical criterion (Problem Severity) backed solely by a HYPOTHESIS triggers NEEDS_MORE_EVIDENCE."""
+    offer, evidence, scores = sample_india_offer_and_evidence
+    hyp_ev = Evidence(
+        id="ev_hyp_crit",
+        claim="Speculative claim that pain is severe",
+        evidence_type=EvidenceType.HYPOTHESIS,
+        geography=Geography.IN,
+        confidence=0.45,
+    )
+    evidence.append(hyp_ev)
+    scores[CriterionKey.PROBLEM_SEVERITY].evidence_ids = ["ev_hyp_crit"]
+
+    evaluator = OfferEvaluator()
+    result = evaluator.evaluate(offer, scores, evidence)
+
+    assert result.status == DecisionStatus.NEEDS_MORE_EVIDENCE
+    assert any("relies solely on unverified hypotheses" in m for m in result.missing_evidence_criteria)
+
+
+def test_sample_offer_has_sample_flag_and_disclaimer(sample_india_offer_and_evidence):
+    """Demonstration offer with is_sample=True has is_sample=True in result and prominent disclaimer."""
+    offer, evidence, scores = sample_india_offer_and_evidence
+    offer.is_sample = True
+
+    evaluator = OfferEvaluator()
+    result = evaluator.evaluate(offer, scores, evidence)
+
+    assert result.is_sample is True
+    assert result.status == DecisionStatus.SELECTED
+    assert any("[DEMONSTRATION SAMPLE ONLY]" in r for r in result.reasons)
+

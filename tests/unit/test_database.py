@@ -131,3 +131,69 @@ def test_transaction_rollback_on_failure(temp_db):
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM runs WHERE run_id = 'run_tx_01'")
     assert cursor.fetchone() is None
+
+
+def test_is_sample_persistence_and_filtering(temp_db):
+    """Test saving and filtering sample vs production records."""
+    ev_prod = Evidence(
+        id="ev_prod_01",
+        claim="Real empirical finding from market research",
+        evidence_type=EvidenceType.VERIFIED_SOURCE,
+        geography=Geography.IN,
+        confidence=0.85,
+        source_url="https://example.com/real-study",
+        is_sample=False,
+    )
+    ev_demo = Evidence(
+        id="ev_demo_01",
+        claim="Synthetic demonstration evidence for testing",
+        evidence_type=EvidenceType.HYPOTHESIS,
+        geography=Geography.IN,
+        confidence=0.40,
+        is_sample=True,
+    )
+    temp_db.save_evidence(ev_prod)
+    temp_db.save_evidence(ev_demo)
+
+    prod_only = temp_db.list_evidence(is_sample=False)
+    assert len(prod_only) == 1
+    assert prod_only[0].id == "ev_prod_01"
+
+    demo_only = temp_db.list_evidence(is_sample=True)
+    assert len(demo_only) == 1
+    assert demo_only[0].id == "ev_demo_01"
+
+    # Test offers
+    off_prod = OfferCandidate(
+        id="off_prod_01",
+        title="Production Offer Candidate",
+        target_geography=Geography.IN,
+        buyer_profile="Real Buyers",
+        problem_statement="Real Problem Statement",
+        proposed_deliverable="Real Deliverable",
+        plausible_pricing_or_pilot="Pilot Terms",
+        delivery_method="Remote delivery",
+        is_sample=False,
+    )
+    off_demo = OfferCandidate(
+        id="off_demo_01",
+        title="Sample Demo Offer Candidate",
+        target_geography=Geography.IN,
+        buyer_profile="Demo Buyers",
+        problem_statement="Demo Problem Statement",
+        proposed_deliverable="Demo Deliverable",
+        plausible_pricing_or_pilot="Demo Terms",
+        delivery_method="Remote delivery",
+        is_sample=True,
+    )
+    temp_db.save_offer(off_prod)
+    temp_db.save_offer(off_demo)
+
+    prod_offers = temp_db.list_offers(is_sample=False)
+    assert len(prod_offers) == 1
+    assert prod_offers[0].id == "off_prod_01"
+
+    demo_offers = temp_db.list_offers(is_sample=True)
+    assert len(demo_offers) == 1
+    assert demo_offers[0].id == "off_demo_01"
+

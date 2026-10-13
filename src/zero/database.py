@@ -54,7 +54,8 @@ class Database:
                     ended_at TEXT,
                     current_stage TEXT NOT NULL,
                     status TEXT NOT NULL,
-                    budget_spent_inr REAL DEFAULT 0.0
+                    budget_spent_inr REAL DEFAULT 0.0,
+                    is_sample INTEGER DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS evidence (
@@ -65,7 +66,8 @@ class Database:
                     confidence REAL NOT NULL,
                     source_url TEXT,
                     captured_at TEXT NOT NULL,
-                    notes TEXT
+                    notes TEXT,
+                    is_sample INTEGER DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS offers (
@@ -79,7 +81,8 @@ class Database:
                     delivery_method TEXT NOT NULL,
                     risks_json TEXT NOT NULL,
                     evidence_ids_json TEXT NOT NULL,
-                    evaluation_json TEXT
+                    evaluation_json TEXT,
+                    is_sample INTEGER DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS audit_events (
@@ -95,6 +98,12 @@ class Database:
                 );
                 """
             )
+            # Lightweight schema migration for existing databases
+            for tbl in ["runs", "evidence", "offers"]:
+                cursor = conn.execute(f"PRAGMA table_info({tbl})")
+                cols = {r["name"] for r in cursor.fetchall()}
+                if "is_sample" not in cols:
+                    conn.execute(f"ALTER TABLE {tbl} ADD COLUMN is_sample INTEGER DEFAULT 0")
 
     @property
     def audit(self) -> AuditManager:
@@ -106,8 +115,8 @@ class Database:
         with conn:
             conn.execute(
                 """
-                INSERT INTO runs (run_id, started_at, ended_at, current_stage, status, budget_spent_inr)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO runs (run_id, started_at, ended_at, current_stage, status, budget_spent_inr, is_sample)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
@@ -116,9 +125,10 @@ class Database:
                     run.current_stage.value,
                     run.status,
                     run.budget_spent_inr,
+                    1 if run.is_sample else 0,
                 ),
             )
-        self.audit.record_event("SYSTEM", "RUN_CREATED", {"run_id": run.run_id, "stage": run.current_stage.value})
+        self.audit.record_event("SYSTEM", "RUN_CREATED", {"run_id": run.run_id, "stage": run.current_stage.value, "is_sample": run.is_sample})
         return run
 
     def get_run(self, run_id: str) -> Optional[Run]:
@@ -135,6 +145,7 @@ class Database:
             current_stage=RunState(row["current_stage"]),
             status=row["status"],
             budget_spent_inr=row["budget_spent_inr"],
+            is_sample=bool(row["is_sample"]) if "is_sample" in row.keys() else False,
         )
 
     def update_run_stage(self, run_id: str, stage: RunState, status: str) -> None:
@@ -152,8 +163,8 @@ class Database:
         with conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO evidence (id, claim, evidence_type, geography, confidence, source_url, captured_at, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO evidence (id, claim, evidence_type, geography, confidence, source_url, captured_at, notes, is_sample)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ev.id,
@@ -164,6 +175,7 @@ class Database:
                     ev.source_url,
                     ev.captured_at.isoformat(),
                     ev.notes,
+                    1 if ev.is_sample else 0,
                 ),
             )
         self.audit.record_event(
@@ -174,6 +186,7 @@ class Database:
                 "evidence_type": ev.evidence_type.value,
                 "geography": ev.geography.value,
                 "confidence": ev.confidence,
+                "is_sample": ev.is_sample,
             },
         )
         return ev
@@ -194,12 +207,14 @@ class Database:
             source_url=row["source_url"],
             captured_at=datetime.fromisoformat(row["captured_at"]),
             notes=row["notes"] or "",
+            is_sample=bool(row["is_sample"]) if "is_sample" in row.keys() else False,
         )
 
     def list_evidence(
         self,
         geography: Optional[Geography] = None,
         evidence_type: Optional[EvidenceType] = None,
+        is_sample: Optional[bool] = None,
     ) -> List[Evidence]:
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -211,6 +226,9 @@ class Database:
         if evidence_type:
             query += " AND evidence_type = ?"
             params.append(evidence_type.value)
+        if is_sample is not None:
+            query += " AND is_sample = ?"
+            params.append(1 if is_sample else 0)
         query += " ORDER BY captured_at DESC"
         cursor.execute(query, params)
         rows = cursor.fetchall()
@@ -224,6 +242,7 @@ class Database:
                 source_url=r["source_url"],
                 captured_at=datetime.fromisoformat(r["captured_at"]),
                 notes=r["notes"] or "",
+                is_sample=bool(r["is_sample"]) if "is_sample" in r.keys() else False,
             )
             for r in rows
         ]
@@ -235,8 +254,8 @@ class Database:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO offers 
-                (id, title, target_geography, buyer_profile, problem_statement, proposed_deliverable, plausible_pricing_or_pilot, delivery_method, risks_json, evidence_ids_json, evaluation_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, target_geography, buyer_profile, problem_statement, proposed_deliverable, plausible_pricing_or_pilot, delivery_method, risks_json, evidence_ids_json, evaluation_json, is_sample)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     offer.id,
@@ -250,6 +269,7 @@ class Database:
                     json.dumps(offer.risks),
                     json.dumps(offer.evidence_ids),
                     json.dumps(offer.evaluation.model_dump()) if offer.evaluation else None,
+                    1 if offer.is_sample else 0,
                 ),
             )
         self.audit.record_event(
@@ -260,6 +280,7 @@ class Database:
                 "title": offer.title,
                 "geography": offer.target_geography.value,
                 "status": offer.evaluation.status.value if offer.evaluation else "PENDING_EVALUATION",
+                "is_sample": offer.is_sample,
             },
         )
         return offer
@@ -284,9 +305,14 @@ class Database:
             risks=json.loads(row["risks_json"]),
             evidence_ids=json.loads(row["evidence_ids_json"]),
             evaluation=eval_data,
+            is_sample=bool(row["is_sample"]) if "is_sample" in row.keys() else False,
         )
 
-    def list_offers(self, geography: Optional[Geography] = None) -> List[OfferCandidate]:
+    def list_offers(
+        self,
+        geography: Optional[Geography] = None,
+        is_sample: Optional[bool] = None,
+    ) -> List[OfferCandidate]:
         conn = self.get_connection()
         cursor = conn.cursor()
         query = "SELECT * FROM offers WHERE 1=1"
@@ -294,6 +320,9 @@ class Database:
         if geography:
             query += " AND target_geography = ?"
             params.append(geography.value)
+        if is_sample is not None:
+            query += " AND is_sample = ?"
+            params.append(1 if is_sample else 0)
         cursor.execute(query, params)
         rows = cursor.fetchall()
         result = []
@@ -312,6 +341,7 @@ class Database:
                     risks=json.loads(r["risks_json"]),
                     evidence_ids=json.loads(r["evidence_ids_json"]),
                     evaluation=eval_data,
+                    is_sample=bool(r["is_sample"]) if "is_sample" in r.keys() else False,
                 )
             )
         return result

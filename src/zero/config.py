@@ -17,8 +17,10 @@ DEFAULT_DB_PATH = DATA_DIR / "project_zero.db"
 
 # Minimum evidence confidence threshold (0.0 to 1.0)
 # Default is set to 0.65:
-# - Allows verified market data (typically >= 0.70) and vetted user-provided data (0.65-0.80)
-# - Filters out unverified speculative hypotheses (< 0.50) from automatically qualifying an offer
+# - Serves as an operational engineering heuristic to filter out speculative hypotheses (< 0.50)
+#   and unvetted claims from qualifying an offer.
+# - NOTE: This heuristic is NOT a statistically measured or empirically validated probability
+#   of market success or conversion.
 # - Can be configured via environment variable CONFIDENCE_THRESHOLD
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.65"))
 

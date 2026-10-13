@@ -1,6 +1,8 @@
 """
 Seed script demonstrating Stage A market research and offer evaluation.
 Uses CLEARLY LABELED SAMPLE DATA to illustrate how Stage A operates.
+All records are explicitly flagged with is_sample=True so they are NEVER
+conflated with real-world market research.
 """
 
 from zero.database import Database
@@ -9,7 +11,6 @@ from zero.research.evidence import EvidenceService
 from zero.schemas import (
     CriterionKey,
     CriterionScore,
-    DecisionStatus,
     EvidenceType,
     Geography,
     OfferCandidate,
@@ -23,11 +24,12 @@ def seed_demo_data():
     service = EvidenceService(db)
     evaluator = OfferEvaluator()
 
-    # Create run
+    # Create run explicitly flagged as sample demonstration
     run = Run(
         run_id="run_stage_a_demo_01",
         current_stage=RunState.OFFER_DECISION,
         status="STAGE_A_SAMPLE_EVALUATION",
+        is_sample=True,
     )
     db.create_run(run)
 
@@ -39,6 +41,7 @@ def seed_demo_data():
         confidence=0.88,
         source_url="https://example.com/reports/india-d2c-logistics-2026",
         notes="Industry report across 150 fashion and electronics D2C brands",
+        is_sample=True,
     )
     ev_in_2 = service.record_evidence(
         claim="[SAMPLE] Indian D2C brands actively spend INR 10k-30k/month on WhatsApp verification and Shopify plugins.",
@@ -47,6 +50,7 @@ def seed_demo_data():
         confidence=0.82,
         source_url="https://example.com/reports/saas-spend-india",
         notes="SaaS tool marketplace pricing benchmarks",
+        is_sample=True,
     )
     ev_in_3 = service.record_evidence(
         claim="[SAMPLE] Founder contacts and operations leads are accessible via public website listings and business registries.",
@@ -54,6 +58,7 @@ def seed_demo_data():
         geography=Geography.IN,
         confidence=0.75,
         notes="Manual verification across 20 brand websites",
+        is_sample=True,
     )
 
     # 2. US Market Evidence
@@ -64,6 +69,7 @@ def seed_demo_data():
         confidence=0.85,
         source_url="https://example.com/reports/us-construction-cashflow",
         notes="Survey of 80 HVAC and electrical trade subcontractors",
+        is_sample=True,
     )
     ev_us_2 = service.record_evidence(
         claim="[SAMPLE] US trade contractors pay $200-$600/month for specialized construction accounting tools.",
@@ -72,6 +78,7 @@ def seed_demo_data():
         confidence=0.80,
         source_url="https://example.com/reports/construction-tech-pricing",
         notes="Subscription pricing data from Procore/Foundation",
+        is_sample=True,
     )
     ev_us_3 = service.record_evidence(
         claim="[SAMPLE] Commercial subcontractor office managers are reachable via public state contractor licensing boards.",
@@ -80,6 +87,7 @@ def seed_demo_data():
         confidence=0.85,
         source_url="https://example.com/cslb-public-registry",
         notes="Public contractor state licensing registry records",
+        is_sample=True,
     )
 
     # 3. Weak / Speculative Evidence (to illustrate NEEDS_MORE_EVIDENCE)
@@ -89,6 +97,7 @@ def seed_demo_data():
         geography=Geography.US,
         confidence=0.35,
         notes="Unverified founder hypothesis with no market survey or pricing evidence",
+        is_sample=True,
     )
 
     # Offer Candidate 1 (India): WhatsApp COD Verification
@@ -103,6 +112,7 @@ def seed_demo_data():
         delivery_method="100% remote configuration using free tier webhooks and open-source python scripts at INR 0 cost.",
         risks=["WhatsApp Business API template message approval timelines"],
         evidence_ids=[ev_in_1.id, ev_in_2.id, ev_in_3.id],
+        is_sample=True,
     )
     scores_in = {
         CriterionKey.PROBLEM_SEVERITY: CriterionScore(
@@ -141,6 +151,7 @@ def seed_demo_data():
         delivery_method="100% remote delivery using open-source Python spreadsheet automation at INR 0 cost.",
         risks=["Differing GC-specific supplemental lien waiver formats"],
         evidence_ids=[ev_us_1.id, ev_us_2.id, ev_us_3.id],
+        is_sample=True,
     )
     scores_us = {
         CriterionKey.PROBLEM_SEVERITY: CriterionScore(
@@ -179,6 +190,7 @@ def seed_demo_data():
         delivery_method="Requires third-party telephony APIs (Twilio, paid AI voice providers).",
         risks=["Telephony API costs violate INR 0 budget; HIPAA compliance issues."],
         evidence_ids=[ev_weak_1.id],
+        is_sample=True,
     )
     scores_spec = {
         CriterionKey.PROBLEM_SEVERITY: CriterionScore(
@@ -205,7 +217,7 @@ def seed_demo_data():
     offer_spec.evaluation = evaluator.evaluate(offer_spec, scores_spec, [ev_weak_1])
     db.save_offer(offer_spec)
 
-    print("Demo sample data seeded successfully.")
+    print("Demo sample data seeded successfully with is_sample=True isolation.")
 
 
 if __name__ == "__main__":
