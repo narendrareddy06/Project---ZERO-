@@ -14,8 +14,12 @@ from rich.table import Table
 
 from zero.config import CONFIDENCE_THRESHOLD, DEFAULT_DB_PATH
 from zero.database import Database
+from zero.demos.generator import DemoAssetGenerator
+from zero.prospects.discovery import ProspectDiscoveryEngine
+from zero.prospects.qualification import ProspectQualificationEngine
 from zero.research.evaluator import OfferEvaluator
 from zero.research.evidence import EvidenceService
+from zero.research.fetcher import PublicWebResearcher
 from zero.schemas import (
     CRITERION_WEIGHTS,
     CriterionKey,
@@ -24,8 +28,12 @@ from zero.schemas import (
     EvidenceType,
     Geography,
     OfferCandidate,
+    ProofAsset,
+    Prospect,
+    ProspectStatus,
     Run,
     RunState,
+    SuppressionRecord,
 )
 
 console = Console()
@@ -198,6 +206,30 @@ def handle_research(args):
             )
         console.print(table)
 
+    elif args.action == "fetch":
+        if not args.url or not args.claim:
+            console.print("[red]Error: --url and --claim are required for fetch.[/red]")
+            return
+        geo = Geography(args.geo.upper()) if args.geo else Geography.IN
+        researcher = PublicWebResearcher()
+        console.print(f"[cyan]Fetching public source with rate-limits & robots check: {args.url}[/cyan]")
+        excerpt_obj, ev_obj = researcher.research_and_extract(
+            url=args.url,
+            claim=args.claim,
+            geography=geo,
+            is_sample=args.sample,
+        )
+        researcher.close()
+        db = get_db()
+        db.save_evidence(ev_obj, actor="AGENT")
+
+        console.print(Panel.fit(f"[bold]Public Research Result[/bold] (HTTP {excerpt_obj.http_status})", border_style="cyan"))
+        console.print(f"[bold]Claim:[/bold] {ev_obj.claim}")
+        console.print(f"[bold]Evidence Classification:[/bold] {ev_obj.evidence_type.value} (Confidence: {ev_obj.confidence:.2f})")
+        console.print(f"[bold]Supports Claim:[/bold] {'[green]YES[/green]' if excerpt_obj.supports_claim else '[yellow]NO (Hypothesis / Insufficient)[/yellow]'}")
+        console.print(f"[bold]Extracted Excerpt:[/bold]\n{excerpt_obj.excerpt}")
+        console.print(f"[bold]Notes:[/bold] {excerpt_obj.relevance_notes}")
+
 
 def handle_evaluate(args):
     """Handle `zero evaluate` command."""
@@ -293,6 +325,174 @@ def handle_evaluate(args):
                 console.print(f"  - {reason}")
 
 
+def handle_prospects(args):
+    """Handle `zero prospects` commands."""
+    db = get_db()
+
+    if args.action == "list" or args.action is None:
+        prospects = db.list_prospects(
+            associated_offer_id=args.offer,
+            status=ProspectStatus(args.status.upper()) if args.status else None,
+            is_sample=True if args.sample else None,
+        )
+        table = Table(title=f"Business Prospects ({len(prospects)} items)", show_header=True, header_style="bold blue")
+        table.add_column("ID", style="bold")
+        table.add_column("Origin")
+        table.add_column("Company")
+        table.add_column("Domain")
+        table.add_column("Geo", justify="center")
+        table.add_column("Status")
+        table.add_column("Fit Score", justify="right")
+        table.add_column("Public Facts")
+
+        for p in prospects:
+            color = "green" if p.status == ProspectStatus.QUALIFIED else "yellow" if p.status == ProspectStatus.DISCOVERED else "red"
+            origin = "[yellow]SAMPLE[/yellow]" if p.is_sample else "[green]PROD[/green]"
+            facts_summary = f"{len(p.verified_facts.get('identified_services', []))} services"
+            if "public_contact_email" in p.verified_facts:
+                facts_summary += f", {len(p.verified_facts['public_contact_email'])} emails"
+
+            table.add_row(
+                p.id,
+                origin,
+                p.company_name[:25],
+                p.domain_or_website,
+                p.geography.value,
+                f"[{color}]{p.status.value}[/{color}]",
+                f"{p.fit_score:.2f}/5.0" if p.fit_score is not None else "-",
+                facts_summary,
+            )
+        console.print(table)
+
+    elif args.action == "discover":
+        if not args.url or not args.source:
+            console.print("[red]Error: --url and --source are required for prospect discovery.[/red]")
+            return
+        geo = Geography(args.geo.upper()) if args.geo else Geography.IN
+        discovery = ProspectDiscoveryEngine(db)
+        try:
+            prospect, is_new, msg = discovery.discover_from_public_url(
+                company_website_url=args.url,
+                public_source_url=args.source,
+                geography=geo,
+                industry_or_niche=args.niche or "Technology & Professional Services",
+                associated_offer_id=args.offer,
+                is_sample=args.sample,
+            )
+            if prospect:
+                status_color = "green" if prospect.status == ProspectStatus.DISCOVERED else "yellow"
+                console.print(f"[{status_color}][OK] {msg} Prospect ID: {prospect.id} ({prospect.company_name}, {prospect.domain_or_website})[/{status_color}]")
+            else:
+                console.print(f"[red][FAILED] {msg}[/red]")
+        except Exception as e:
+            console.print(f"[bold red]Discovery Error: {e}[/bold red]")
+
+    elif args.action == "qualify":
+        if not args.id or not args.offer:
+            console.print("[red]Error: --id (prospect ID) and --offer (offer ID) are required.[/red]")
+            return
+        prospect = db.get_prospect(args.id)
+        if not prospect:
+            console.print(f"[red]Error: Prospect '{args.id}' not found.[/red]")
+            return
+        offer = db.get_offer(args.offer)
+        if not offer:
+            console.print(f"[red]Error: Offer '{args.offer}' not found.[/red]")
+            return
+        engine = ProspectQualificationEngine(db)
+        prospect, is_qual, rationale = engine.qualify_prospect(prospect, offer)
+        res_color = "green" if is_qual else "yellow"
+        console.print(Panel.fit(f"[bold]Prospect Qualification: {prospect.company_name}[/bold]", border_style=res_color))
+        console.print(f"[bold]Status:[/bold] [{res_color}]{prospect.status.value}[/{res_color}]")
+        console.print(f"[bold]Fit Score:[/bold] {prospect.fit_score:.2f} / 5.0")
+        console.print(f"[bold]Rationale:[/bold] {rationale}")
+
+
+def handle_suppression(args):
+    """Handle `zero suppression` commands."""
+    db = get_db()
+    if args.action == "list" or args.action is None:
+        records = db.list_suppression()
+        table = Table(title=f"Suppression / Opt-Out List ({len(records)} entries)", show_header=True, header_style="bold red")
+        table.add_column("Domain / Email", style="bold")
+        table.add_column("Reason")
+        table.add_column("Added At")
+        table.add_column("Notes")
+
+        for r in records:
+            table.add_row(r.domain_or_email, r.reason, r.added_at.strftime("%Y-%m-%d %H:%M"), r.notes or "")
+        console.print(table)
+
+    elif args.action == "add":
+        if not args.identifier or not args.reason:
+            console.print("[red]Error: identifier and --reason are required.[/red]")
+            return
+        record = SuppressionRecord(
+            domain_or_email=args.identifier,
+            reason=args.reason,
+            notes=args.notes or "",
+        )
+        db.add_suppression(record, actor="USER")
+        console.print(f"[green][OK] Added '{record.domain_or_email}' to suppression registry ({record.reason}).[/green]")
+
+    elif args.action == "check":
+        if not args.identifier:
+            console.print("[red]Error: identifier is required.[/red]")
+            return
+        is_sup = db.is_suppressed(args.identifier)
+        if is_sup:
+            console.print(f"[red][SUPPRESSED] '{args.identifier}' is on the suppression list. Contact strictly prohibited.[/red]")
+        else:
+            console.print(f"[green][CLEAR] '{args.identifier}' is NOT on the suppression list.[/green]")
+
+
+def handle_demo(args):
+    """Handle `zero demo` commands."""
+    db = get_db()
+
+    if args.action == "create":
+        if not args.offer:
+            console.print("[red]Error: --offer is required.[/red]")
+            return
+        offer = db.get_offer(args.offer)
+        if not offer:
+            console.print(f"[red]Error: Offer '{args.offer}' not found.[/red]")
+            return
+        generator = DemoAssetGenerator(db)
+        asset = generator.generate_proof_asset(
+            offer=offer,
+            asset_type=args.type or "AUDIT_CHECKLIST",
+            title=args.title,
+        )
+        console.print(f"[green][OK] Proof asset created: {asset.id} ('{asset.title}')[/green]")
+        console.print(Panel(f"[yellow]{asset.disclaimer}[/yellow]", title="Mandatory Demonstration Notice", border_style="yellow"))
+
+    elif args.action == "list" or args.action is None:
+        assets = db.list_proof_assets(offer_id=args.offer)
+        table = Table(title=f"Demonstration Proof Assets ({len(assets)} items)", show_header=True, header_style="bold yellow")
+        table.add_column("Asset ID", style="bold")
+        table.add_column("Offer ID")
+        table.add_column("Type")
+        table.add_column("Title")
+        table.add_column("Created At")
+
+        for a in assets:
+            table.add_row(a.id, a.offer_id, a.asset_type, a.title, a.created_at.strftime("%Y-%m-%d %H:%M"))
+        console.print(table)
+
+    elif args.action == "show":
+        if not args.id:
+            console.print("[red]Error: asset ID is required.[/red]")
+            return
+        asset = db.get_proof_asset(args.id)
+        if not asset:
+            console.print(f"[red]Error: Proof asset '{args.id}' not found.[/red]")
+            return
+        console.print(Panel.fit(f"[bold]{asset.title}[/bold] ({asset.id})", border_style="yellow"))
+        console.print(f"[bold yellow]DISCLAIMER:[/bold yellow] {asset.disclaimer}\n")
+        console.print(asset.content)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="zero",
@@ -322,6 +522,13 @@ def build_parser() -> argparse.ArgumentParser:
     res_add.add_argument("--notes", help="Context or caveats")
     res_add.add_argument("--sample", action="store_true", default=False, help="Explicitly mark as demonstration/sample data")
 
+    # zero research fetch
+    res_fetch = research_sub.add_parser("fetch", help="Retrieve public web page and verify claim support")
+    res_fetch.add_argument("url", help="Public page URL to fetch")
+    res_fetch.add_argument("--claim", required=True, help="Asserted claim to evaluate against page content")
+    res_fetch.add_argument("--geo", choices=["IN", "US", "in", "us"], default="IN", help="Geography")
+    res_fetch.add_argument("--sample", action="store_true", default=False, help="Mark as demonstration/sample data")
+
     # zero evaluate
     eval_parser = subparsers.add_parser("evaluate", help="Inspect and evaluate offer candidates")
     eval_sub = eval_parser.add_subparsers(dest="action")
@@ -333,6 +540,65 @@ def build_parser() -> argparse.ArgumentParser:
     # zero evaluate show
     eval_show = eval_sub.add_parser("show", help="Show detailed evaluation rubric breakdown for an offer")
     eval_show.add_argument("offer_id", help="Offer ID to inspect")
+
+    # zero prospects
+    prosp_parser = subparsers.add_parser("prospects", help="Discover, list, and qualify business prospects")
+    prosp_sub = prosp_parser.add_subparsers(dest="action")
+
+    # zero prospects list
+    prosp_list = prosp_sub.add_parser("list", help="List discovered prospects")
+    prosp_list.add_argument("--offer", help="Filter by associated offer ID")
+    prosp_list.add_argument("--status", choices=["DISCOVERED", "QUALIFIED", "DISQUALIFIED", "SUPPRESSED"], help="Filter by status")
+    prosp_list.add_argument("--sample", action="store_true", default=False, help="Filter demonstration prospects")
+
+    # zero prospects discover
+    prosp_disc = prosp_sub.add_parser("discover", help="Discover a prospect from permitted public company URL")
+    prosp_disc.add_argument("--url", required=True, help="Public website of the company")
+    prosp_disc.add_argument("--source", required=True, help="Permitted public source URL where business was found")
+    prosp_disc.add_argument("--geo", choices=["IN", "US", "in", "us"], default="IN", help="Target geography")
+    prosp_disc.add_argument("--niche", help="Industry sector or specialty")
+    prosp_disc.add_argument("--offer", help="Candidate offer ID to associate")
+    prosp_disc.add_argument("--sample", action="store_true", default=False, help="Mark as demonstration data")
+
+    # zero prospects qualify
+    prosp_qual = prosp_sub.add_parser("qualify", help="Evaluate prospect fit against an offer candidate")
+    prosp_qual.add_argument("--id", required=True, help="Prospect ID to qualify")
+    prosp_qual.add_argument("--offer", required=True, help="Offer candidate ID to evaluate against")
+
+    # zero suppression
+    supp_parser = subparsers.add_parser("suppression", help="Manage suppression and do-not-contact records")
+    supp_sub = supp_parser.add_subparsers(dest="action")
+
+    # zero suppression list
+    supp_sub.add_parser("list", help="List all suppression records")
+
+    # zero suppression add
+    supp_add = supp_sub.add_parser("add", help="Add domain or email to suppression list")
+    supp_add.add_argument("identifier", help="Domain or email address to suppress")
+    supp_add.add_argument("--reason", required=True, help="Reason: OPT_OUT, DO_NOT_CONTACT, COMPETITOR, etc.")
+    supp_add.add_argument("--notes", help="Optional context or notes")
+
+    # zero suppression check
+    supp_chk = supp_sub.add_parser("check", help="Check if an identifier is suppressed")
+    supp_chk.add_argument("identifier", help="Domain or email address to check")
+
+    # zero demo
+    demo_parser = subparsers.add_parser("demo", help="Generate and inspect truthful demonstration proof assets")
+    demo_sub = demo_parser.add_subparsers(dest="action")
+
+    # zero demo create
+    demo_create = demo_sub.add_parser("create", help="Create a proof asset for an offer")
+    demo_create.add_argument("--offer", required=True, help="Offer ID to generate proof asset for")
+    demo_create.add_argument("--type", choices=["AUDIT_CHECKLIST", "SPECIFICATION", "PROTOTYPE_WALKTHROUGH"], default="AUDIT_CHECKLIST")
+    demo_create.add_argument("--title", help="Custom asset title")
+
+    # zero demo list
+    demo_list = demo_sub.add_parser("list", help="List proof assets")
+    demo_list.add_argument("--offer", help="Filter by offer ID")
+
+    # zero demo show
+    demo_show = demo_sub.add_parser("show", help="Display proof asset content and mandatory notice")
+    demo_show.add_argument("id", help="Proof asset ID")
 
     return parser
 
@@ -347,6 +613,12 @@ def main():
         handle_research(args)
     elif args.command == "evaluate":
         handle_evaluate(args)
+    elif args.command == "prospects":
+        handle_prospects(args)
+    elif args.command == "suppression":
+        handle_suppression(args)
+    elif args.command == "demo":
+        handle_demo(args)
     else:
         parser.print_help()
 

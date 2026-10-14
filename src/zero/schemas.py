@@ -44,6 +44,8 @@ class Evidence(BaseModel):
     source_url: Optional[str] = Field(None, description="Public URL or source identifier if verified")
     captured_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="UTC timestamp when captured")
     notes: Optional[str] = Field("", description="Supporting context, caveats, or contradictions")
+    excerpt: Optional[str] = Field(None, description="Direct supporting excerpt extracted from public source")
+    retrieved_at: Optional[datetime] = Field(None, description="UTC timestamp when source was retrieved")
     is_sample: bool = Field(default=False, description="Whether this record is synthetic demonstration/sample data")
 
     @field_validator("source_url")
@@ -179,3 +181,101 @@ class AuditEvent(BaseModel):
     prev_hash: str = Field(..., description="SHA-256 hash of previous audit event in chain")
     event_hash: str = Field(..., description="SHA-256 hash verifying this event's integrity")
     details: Dict[str, Any] = Field(default_factory=dict)
+
+
+class FetchStatus(str, Enum):
+    """Result status of public web source retrieval."""
+    SUCCESS = "SUCCESS"
+    HTTP_ERROR = "HTTP_ERROR"
+    ROBOTS_DISALLOWED = "ROBOTS_DISALLOWED"
+    CONNECTION_FAILED = "CONNECTION_FAILED"
+    TIMEOUT = "TIMEOUT"
+    BLOCKED_DOMAIN = "BLOCKED_DOMAIN"
+    NON_HTML = "NON_HTML"
+    LOGIN_OR_PAYWALL_DETECTED = "LOGIN_OR_PAYWALL_DETECTED"
+
+
+class ResearchExcerpt(BaseModel):
+    """Supporting excerpt extracted from a public web source."""
+    source_url: str
+    retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    http_status: int
+    title: Optional[str] = None
+    excerpt: str
+    supports_claim: bool
+    relevance_notes: str = ""
+    is_conflicting: bool = False
+
+
+class ProspectStatus(str, Enum):
+    """Qualification status of a business prospect."""
+    DISCOVERED = "DISCOVERED"
+    QUALIFIED = "QUALIFIED"
+    DISQUALIFIED = "DISQUALIFIED"
+    SUPPRESSED = "SUPPRESSED"
+
+
+class Prospect(BaseModel):
+    """
+    A real-world business prospect identified from permitted public sources.
+    Strictly forbids LinkedIn scraping/access per AGENTS.md and PRD rules.
+    """
+    id: str = Field(..., description="Unique prospect ID (e.g. prosp_12345678)")
+    company_name: str = Field(..., min_length=2, description="Legal or trading name of business")
+    domain_or_website: str = Field(..., min_length=3, description="Company website or public domain")
+    geography: Geography = Field(..., description="Target market geography (IN or US)")
+    industry_or_niche: str = Field(..., min_length=2, description="Industry sector or specialty")
+    public_source_url: str = Field(..., description="Permitted public source where business was discovered")
+    discovered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="UTC timestamp when discovered")
+    status: ProspectStatus = Field(default=ProspectStatus.DISCOVERED, description="Current prospect status")
+    fit_score: Optional[float] = Field(None, ge=0.0, le=5.0, description="Fit score from 1.0 to 5.0 against offer")
+    fit_rationale: Optional[str] = Field(None, description="Detailed rationale explaining fit with supporting public facts")
+    verified_facts: Dict[str, Any] = Field(default_factory=dict, description="Verified facts from public sources")
+    assumptions: Dict[str, Any] = Field(default_factory=dict, description="Explicit assumptions or hypotheses about prospect")
+    associated_offer_id: Optional[str] = Field(None, description="Offer ID this prospect is evaluated against")
+    is_sample: bool = Field(default=False, description="Whether this is synthetic demonstration/sample data")
+
+    @field_validator("domain_or_website", "public_source_url")
+    @classmethod
+    def reject_linkedin_urls(cls, v: str) -> str:
+        lower_v = v.lower()
+        if "linkedin.com" in lower_v:
+            raise ValueError(
+                "LinkedIn discovery, scraping, and messaging are strictly prohibited by Project ZERO safety rules (AGENTS.md)."
+            )
+        return v
+
+
+class SuppressionRecord(BaseModel):
+    """Suppression / opt-out / do-not-contact record."""
+    domain_or_email: str = Field(..., min_length=3, description="Normalized domain or email to suppress")
+    reason: str = Field(..., min_length=3, description="Reason: OPT_OUT, DO_NOT_CONTACT, COMPETITOR, etc.")
+    added_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="UTC timestamp when added")
+    notes: Optional[str] = Field("", description="Additional context")
+
+
+class ProofAsset(BaseModel):
+    """
+    A truthful demonstration asset illustrating an offer capability.
+    Must never fabricate past client testimonials, fictional outcomes, or case studies.
+    """
+    id: str = Field(..., description="Unique proof asset ID (e.g. asset_12345678)")
+    offer_id: str = Field(..., description="Offer candidate ID this asset demonstrates")
+    title: str = Field(..., min_length=5, description="Title of demonstration asset")
+    asset_type: str = Field(..., description="Type of asset: AUDIT_CHECKLIST, SPECIFICATION, PROTOTYPE_WALKTHROUGH")
+    content: str = Field(..., min_length=20, description="Asset markdown or text content")
+    disclaimer: str = Field(
+        ...,
+        description="Mandatory disclaimer stating this is a Project ZERO demo, not past client work or fabricated results",
+    )
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="UTC timestamp created")
+    is_sample: bool = Field(default=True, description="Proof assets are demonstration records")
+
+    @model_validator(mode="after")
+    def validate_disclaimer_content(self) -> "ProofAsset":
+        required_phrase = "PROJECT ZERO DEMONSTRATION ASSET"
+        if required_phrase not in self.disclaimer.upper():
+            raise ValueError(
+                f"Proof asset disclaimer must contain '{required_phrase}' to prevent misrepresentation."
+            )
+        return self
