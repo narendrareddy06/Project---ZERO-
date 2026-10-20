@@ -46,6 +46,7 @@ class HTMLTextExtractor(html.parser.HTMLParser):
         self._in_ignored_tag = False
         self._ignored_tags = {"script", "style", "svg", "noscript"}
         self.title: Optional[str] = None
+        self.meta_description: Optional[str] = None
         self._in_title = False
         self.has_password_field = False
 
@@ -59,6 +60,14 @@ class HTMLTextExtractor(html.parser.HTMLParser):
             attrs_dict = {k.lower(): (v.lower() if v else "") for k, v in attrs}
             if attrs_dict.get("type") == "password":
                 self.has_password_field = True
+        elif tag_lower == "meta":
+            attrs_dict = {k.lower(): (v if v else "") for k, v in attrs}
+            name_val = attrs_dict.get("name", "").lower()
+            prop_val = attrs_dict.get("property", "").lower()
+            if name_val == "description" or prop_val == "og:description":
+                content_val = attrs_dict.get("content", "").strip()
+                if content_val and not self.meta_description:
+                    self.meta_description = content_val
 
     def handle_endtag(self, tag: str):
         tag_lower = tag.lower()
@@ -110,6 +119,7 @@ class PublicWebResearcher:
         )
         self._robots_cache: Dict[str, urllib.robotparser.RobotFileParser] = {}
         self._last_domain_request: Dict[str, float] = {}
+        self.last_meta_description: Optional[str] = None
 
     def close(self):
         """Close the underlying HTTP client session."""
@@ -216,6 +226,8 @@ class PublicWebResearcher:
             parser.feed(resp.text)
         except Exception as e:
             return FetchStatus.NON_HTML, None, None, status_code, f"HTML parsing error: {str(e)}"
+
+        self.last_meta_description = parser.meta_description
 
         # Detect paywalls or mandatory login forms
         if parser.has_password_field:
@@ -326,8 +338,8 @@ class PublicWebResearcher:
         retrieved_at = datetime.now(timezone.utc)
         status, title, clean_text, http_code, message = self.fetch_page(url)
 
-        if status != FetchStatus.SUCCESS or not clean_text:
-            # Failed or inaccessible retrieval: accurately recorded as CONFLICTING_OR_INSUFFICIENT
+        # 1. Genuine retrieval failure (HTTP error, connection error, timeout, robots disallowed, paywall/auth wall)
+        if status != FetchStatus.SUCCESS:
             excerpt_obj = ResearchExcerpt(
                 source_url=url,
                 retrieved_at=retrieved_at,
@@ -349,6 +361,52 @@ class PublicWebResearcher:
                 retrieved_at=retrieved_at,
                 excerpt=excerpt_obj.excerpt,
                 notes=f"Inaccessible or blocked source: {message}",
+                is_sample=is_sample,
+            )
+            return excerpt_obj, evidence_obj
+
+        # 2. Retrieval succeeded (HTTP 200), but no readable static body text was extracted
+        # (e.g. client-side JavaScript Single Page Application shell or empty body)
+        if not clean_text or not clean_text.strip():
+            meta_desc = getattr(self, "last_meta_description", None)
+            if meta_desc:
+                excerpt_msg = (
+                    f"[NO STATIC TEXT] Page retrieved successfully, but no readable static body text was extracted. "
+                    f"Public metadata description: \"{meta_desc}\""
+                )
+                relevance = (
+                    f"Page retrieved successfully (HTTP {http_code}), but body contains no readable static text "
+                    f"(client-side JavaScript application shell or empty body). "
+                    f"Metadata description noted, but cannot corroborate arbitrary claims without page body content."
+                )
+            else:
+                excerpt_msg = "[NO STATIC TEXT] Page retrieved successfully, but no readable static body text was extracted."
+                relevance = (
+                    f"Page retrieved successfully (HTTP {http_code}), but body contains no readable static text "
+                    f"(client-side JavaScript application shell or empty body)."
+                )
+
+            excerpt_obj = ResearchExcerpt(
+                source_url=url,
+                retrieved_at=retrieved_at,
+                http_status=http_code,
+                title=title,
+                excerpt=excerpt_msg,
+                supports_claim=False,
+                relevance_notes=relevance,
+                is_conflicting=False,
+            )
+            evidence_obj = Evidence(
+                id=f"ev_res_{int(retrieved_at.timestamp())}",
+                claim=claim,
+                evidence_type=EvidenceType.HYPOTHESIS,
+                geography=geography,
+                confidence=0.30,  # <= 0.50 hypothesis cap, unverified
+                source_url=url,
+                captured_at=retrieved_at,
+                retrieved_at=retrieved_at,
+                excerpt=excerpt_obj.excerpt,
+                notes=relevance,
                 is_sample=is_sample,
             )
             return excerpt_obj, evidence_obj

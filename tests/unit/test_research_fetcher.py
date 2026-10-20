@@ -180,3 +180,88 @@ def test_failed_retrieval_records_insufficient_evidence():
     assert ev_obj.evidence_type == EvidenceType.CONFLICTING_OR_INSUFFICIENT
     assert ev_obj.confidence <= 0.20
     assert "[RETRIEVAL FAILED]" in ev_obj.excerpt
+
+
+def test_html_text_extractor_captures_meta_description():
+    html_content = """
+    <html>
+        <head>
+            <title>IdeaProof Validation</title>
+            <meta name="description" content="Test your startup idea in 120 seconds with AI analysis.">
+        </head>
+        <body><div id="root"></div></body>
+    </html>
+    """
+    extractor = HTMLTextExtractor()
+    extractor.feed(html_content)
+    assert extractor.title == "IdeaProof Validation"
+    assert extractor.meta_description == "Test your startup idea in 120 seconds with AI analysis."
+    assert extractor.get_text() == ""
+
+
+def test_successful_http_response_with_empty_body():
+    mock_client = MagicMock(spec=httpx.Client)
+    page_resp = MagicMock(spec=httpx.Response)
+    page_resp.status_code = 200
+    page_resp.headers = {"content-type": "text/html"}
+    page_resp.text = "<html><head><title>Empty Page</title></head><body></body></html>"
+    mock_client.get.return_value = page_resp
+
+    researcher = PublicWebResearcher(client=mock_client, check_robots=False, request_delay=0.0)
+    claim = "Any business assertion"
+    excerpt_obj, ev_obj = researcher.research_and_extract(
+        url="https://example.com/empty",
+        claim=claim,
+        geography=Geography.IN,
+        is_sample=False,
+    )
+
+    # Must accurately report [NO STATIC TEXT] rather than claiming retrieval failed
+    assert "[NO STATIC TEXT]" in excerpt_obj.excerpt
+    assert "[RETRIEVAL FAILED]" not in excerpt_obj.excerpt
+    assert excerpt_obj.supports_claim is False
+    assert excerpt_obj.is_conflicting is False
+    assert ev_obj.evidence_type == EvidenceType.HYPOTHESIS
+    assert ev_obj.confidence <= 0.50
+    assert "no readable static text" in ev_obj.notes
+
+
+def test_successful_http_response_with_javascript_app_shell():
+    mock_client = MagicMock(spec=httpx.Client)
+    page_resp = MagicMock(spec=httpx.Response)
+    page_resp.status_code = 200
+    page_resp.headers = {"content-type": "text/html"}
+    page_resp.text = """
+    <!DOCTYPE html>
+    <html>
+        <head>
+            <title>Test Your Idea in 120s - AI Startup Validator</title>
+            <meta name="description" content="Validate your startup idea in 120 seconds with AI SWOT and TAM.">
+        </head>
+        <body>
+            <noscript>You need to enable JavaScript to run this app.</noscript>
+            <div id="root"></div>
+        </body>
+    </html>
+    """
+    mock_client.get.return_value = page_resp
+
+    researcher = PublicWebResearcher(client=mock_client, check_robots=False, request_delay=0.0)
+    claim = "This page lists online business ideas"
+    excerpt_obj, ev_obj = researcher.research_and_extract(
+        url="https://ideaproof.io/lists/online-business-ideas",
+        claim=claim,
+        geography=Geography.US,
+        is_sample=False,
+    )
+
+    # Must NOT report contradictory '[RETRIEVAL FAILED] Successfully retrieved'
+    assert "[RETRIEVAL FAILED]" not in excerpt_obj.excerpt
+    assert "[NO STATIC TEXT]" in excerpt_obj.excerpt
+    assert "Public metadata description:" in excerpt_obj.excerpt
+    assert "Validate your startup idea in 120 seconds" in excerpt_obj.excerpt
+    assert excerpt_obj.supports_claim is False
+    assert excerpt_obj.is_conflicting is False
+    assert ev_obj.evidence_type == EvidenceType.HYPOTHESIS
+    assert ev_obj.confidence <= 0.50
+
