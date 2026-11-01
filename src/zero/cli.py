@@ -20,6 +20,13 @@ from zero.prospects.qualification import ProspectQualificationEngine
 from zero.research.evaluator import OfferEvaluator
 from zero.research.evidence import EvidenceService
 from zero.research.fetcher import PublicWebResearcher
+from zero.research.sources import (
+    GitHubIssuesSource,
+    HnAlgoliaSource,
+    WigoloDiscoverySource,
+    get_all_source_definitions,
+)
+from zero.research.autonomous import AutonomousDiscoveryEngine
 from zero.schemas import (
     CRITERION_WEIGHTS,
     CriterionKey,
@@ -229,6 +236,139 @@ def handle_research(args):
         console.print(f"[bold]Supports Claim:[/bold] {'[green]YES[/green]' if excerpt_obj.supports_claim else '[yellow]NO (Hypothesis / Insufficient)[/yellow]'}")
         console.print(f"[bold]Extracted Excerpt:[/bold]\n{excerpt_obj.excerpt}")
         console.print(f"[bold]Notes:[/bold] {excerpt_obj.relevance_notes}")
+
+    elif args.action == "sources":
+        sources = get_all_source_definitions()
+        table = Table(title=f"Discovery Source Registry ({len(sources)} sources evaluated)", show_header=True, header_style="bold cyan")
+        table.add_column("Adapter", style="bold", no_wrap=True)
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Operating Cost", justify="right", no_wrap=True)
+        table.add_column("Rate Limit")
+        table.add_column("Details / Exclusion Rationale")
+
+        for s in sources:
+            status_style = "green" if s.is_active else "red"
+            status_text = f"[{status_style}]{'ACTIVE / PERMITTED' if s.is_active else 'EXCLUDED'}[/{status_style}]"
+            details = s.description if s.is_active else f"[yellow]{s.exclusion_reason}[/yellow]"
+            table.add_row(
+                s.name,
+                status_text,
+                f"INR {s.cost_inr:.2f}",
+                s.rate_limit_info,
+                details,
+            )
+        console.print(table)
+
+    elif args.action == "auto":
+        geo = Geography(args.geo.upper()) if args.geo else Geography.IN
+        focus_list = [f.strip() for f in args.focus.split(",") if f.strip()] if args.focus else ["b2b", "saas", "professional services"]
+
+        if args.sources == "wigolo":
+            adapters = [WigoloDiscoverySource()]
+        elif args.sources == "hn":
+            adapters = [HnAlgoliaSource()]
+        elif args.sources == "github":
+            adapters = [GitHubIssuesSource()]
+        else:
+            adapters = [WigoloDiscoverySource(), HnAlgoliaSource(), GitHubIssuesSource()]
+
+        console.print(Panel.fit("[bold cyan]PROJECT ZERO — AUTONOMOUS OPPORTUNITY DISCOVERY[/bold cyan]", border_style="cyan"))
+        console.print(f"[bold]Target Geography:[/bold] {geo.value}")
+        console.print(f"[bold]Focus Areas:[/bold] {', '.join(focus_list)}")
+        console.print(f"[bold]Operating Budget:[/bold] INR 0.00 (Zero paid APIs/subscriptions)")
+        console.print(f"[bold]Mode:[/bold] {'[yellow]SAMPLE / DEMONSTRATION[/yellow]' if args.sample else '[green]PRODUCTION[/green]'}")
+        console.print(f"[dim]Searching permitted public sources (Wigolo MCP, HN Algolia, GitHub Issues)...[/dim]\n")
+
+        db = get_db()
+        engine = AutonomousDiscoveryEngine(db=db, adapters=adapters)
+        result = engine.discover_opportunities(
+            geography=geo,
+            focus_areas=focus_list,
+            limit_per_query=args.limit or 3,
+            is_sample=args.sample,
+        )
+        engine.close()
+
+        # Display discovered signals
+        if result.sources_discovered:
+            sig_table = Table(title=f"Discovered Problem Signals ({len(result.sources_discovered)} public items)", show_header=True, header_style="bold blue")
+            sig_table.add_column("Source", style="bold")
+            sig_table.add_column("Query", style="dim")
+            sig_table.add_column("Published", style="cyan")
+            sig_table.add_column("Title")
+            sig_table.add_column("Public URL", style="dim")
+
+            for src in result.sources_discovered[:10]:
+                pub_str = src.published_date or "[dim]Undated[/dim]"
+                sig_table.add_row(
+                    src.source_name,
+                    src.query[:25],
+                    pub_str,
+                    src.title[:45] + ("..." if len(src.title) > 45 else ""),
+                    src.url[:40] + ("..." if len(src.url) > 40 else ""),
+                )
+            console.print(sig_table)
+        else:
+            console.print("[yellow]No problem signals retrieved from permitted sources for current queries.[/yellow]")
+
+        # Display synthesized opportunity candidates
+        if result.offers_synthesized:
+            off_table = Table(title=f"Synthesized Candidate Offers ({len(result.offers_synthesized)} candidates)", show_header=True, header_style="bold green")
+            off_table.add_column("ID", style="bold")
+            off_table.add_column("Title")
+            off_table.add_column("Target Buyer")
+            off_table.add_column("Status")
+            off_table.add_column("Score", justify="right")
+
+            for off in result.offers_synthesized:
+                status_str = "[yellow]NEEDS_MORE_EVIDENCE[/yellow]"
+                score_str = "-"
+                if off.evaluation:
+                    score_str = f"{off.evaluation.weighted_score:.2f}/5.0"
+                    if off.evaluation.status == DecisionStatus.SELECTED:
+                        status_str = "[green]SELECTED[/green]"
+                    elif off.evaluation.status == DecisionStatus.REJECTED:
+                        status_str = "[red]REJECTED[/red]"
+                off_table.add_row(
+                    off.id,
+                    off.title,
+                    off.buyer_profile[:40] + ("..." if len(off.buyer_profile) > 40 else ""),
+                    status_str,
+                    score_str,
+                )
+            console.print(off_table)
+
+            # Show details of top candidate
+            top_off = result.offers_synthesized[0]
+            console.print(Panel.fit(f"[bold]Top Ranked Candidate:[/bold] {top_off.title} ({top_off.id})", border_style="cyan"))
+            console.print(f"[bold]Target Buyer:[/bold] {top_off.buyer_profile}")
+            console.print(f"[bold]Problem Statement:[/bold] {top_off.problem_statement}")
+            console.print(f"[bold]Proposed Pilot Deliverable:[/bold] {top_off.proposed_deliverable}")
+            console.print(f"[bold]Plausible Pricing / Pilot:[/bold] {top_off.plausible_pricing_or_pilot}")
+            console.print(f"[bold]Delivery Method:[/bold] {top_off.delivery_method}")
+            console.print(f"[bold]Linked Evidence IDs:[/bold] {', '.join(top_off.evidence_ids)}")
+
+            if top_off.evaluation:
+                console.print(f"\n[bold]Weighted Score:[/bold] {top_off.evaluation.weighted_score:.2f} / 5.0")
+                console.print(f"[bold]Decision Status:[/bold] [yellow]{top_off.evaluation.status.value}[/yellow]")
+                if top_off.evaluation.reasons:
+                    console.print(f"[bold]Evaluation Reasons:[/bold]")
+                    for r in top_off.evaluation.reasons:
+                        console.print(f"  - {r}")
+
+        # Conservative Gating Notice & Next Steps
+        notice_text = (
+            "[bold yellow]CONSERVATIVE SCORING & INTEGRITY NOTICE:[/bold yellow]\n"
+            "• Public forum posts and GitHub issues establish that a problem was reported, but do NOT prove commercial market demand.\n"
+            "• Willingness to pay, buyer accessibility, and 72-hour pilot agreement remain unvalidated hypotheses (<= 0.50 confidence).\n"
+            "• All discovered candidates are gated with [yellow]NEEDS_MORE_EVIDENCE[/yellow] to prevent fabricating demand or revenue.\n\n"
+            "[bold cyan]RECOMMENDED NEXT VALIDATION STEPS:[/bold cyan]\n"
+        )
+        for i, rec in enumerate(result.next_step_recommendations, 1):
+            notice_text += f"{i}. {rec}\n"
+
+        notice_text += f"\n[bold green]Operating Budget Spent:[/bold green] INR 0.00 | Permitted APIs only | Safe execution"
+        console.print(Panel(notice_text, title="Autonomous Discovery Assessment", border_style="yellow"))
 
 
 def handle_evaluate(args):
@@ -528,6 +668,17 @@ def build_parser() -> argparse.ArgumentParser:
     res_fetch.add_argument("--claim", required=True, help="Asserted claim to evaluate against page content")
     res_fetch.add_argument("--geo", choices=["IN", "US", "in", "us"], default="IN", help="Geography")
     res_fetch.add_argument("--sample", action="store_true", default=False, help="Mark as demonstration/sample data")
+
+    # zero research sources
+    research_sub.add_parser("sources", help="List evaluated discovery sources, rate limits, and compliance status")
+
+    # zero research auto
+    res_auto = research_sub.add_parser("auto", help="Autonomously discover B2B opportunities without user-supplied URLs or ideas")
+    res_auto.add_argument("--geo", choices=["IN", "US", "in", "us"], default="IN", help="Target geography (default: IN)")
+    res_auto.add_argument("--focus", default="b2b,saas,professional services", help="Comma-separated broad focus domains or keywords")
+    res_auto.add_argument("--sources", choices=["all", "wigolo", "hn", "github"], default="all", help="Source adapters to query (default: all)")
+    res_auto.add_argument("--limit", type=int, default=3, help="Max results to fetch per query (default: 3)")
+    res_auto.add_argument("--sample", action="store_true", default=False, help="Mark as demonstration/sample data")
 
     # zero evaluate
     eval_parser = subparsers.add_parser("evaluate", help="Inspect and evaluate offer candidates")

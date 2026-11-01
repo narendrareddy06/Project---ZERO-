@@ -46,6 +46,7 @@ class Evidence(BaseModel):
     notes: Optional[str] = Field("", description="Supporting context, caveats, or contradictions")
     excerpt: Optional[str] = Field(None, description="Direct supporting excerpt extracted from public source")
     retrieved_at: Optional[datetime] = Field(None, description="UTC timestamp when source was retrieved")
+    published_date: Optional[str] = Field(None, description="Publication date from source metadata if available")
     is_sample: bool = Field(default=False, description="Whether this record is synthetic demonstration/sample data")
 
     @field_validator("source_url")
@@ -205,6 +206,19 @@ class ResearchExcerpt(BaseModel):
     supports_claim: bool
     relevance_notes: str = ""
     is_conflicting: bool = False
+
+
+class DiscoveredSource(BaseModel):
+    """A raw discovery finding retrieved from a permitted public source adapter."""
+    source_name: str = Field(..., description="Name of source adapter (e.g. hn_algolia, github_issues)")
+    title: str = Field(..., min_length=2, description="Title of the post, issue, or discussion")
+    url: str = Field(..., description="Public canonical URL of the finding")
+    excerpt: str = Field(default="", description="Relevant text excerpt describing the problem or need")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="UTC timestamp of discovery/publication")
+    published_date: Optional[str] = Field(None, description="Extracted source publication date string if available; None if undated")
+    author: Optional[str] = Field(None, description="Author handle or username if publicly visible")
+    query: str = Field(default="", description="Search query string that discovered this source")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional source-specific metadata")
 
 
 class ProspectStatus(str, Enum):
