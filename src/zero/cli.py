@@ -27,6 +27,7 @@ from zero.research.sources import (
     get_all_source_definitions,
 )
 from zero.research.autonomous import AutonomousDiscoveryEngine
+from zero.research.synthesizer import calculate_source_evidence_confidence
 from zero.schemas import (
     CRITERION_WEIGHTS,
     CriterionKey,
@@ -40,6 +41,7 @@ from zero.schemas import (
     ProspectStatus,
     Run,
     RunState,
+    SourceVerificationStatus,
     SuppressionRecord,
 )
 
@@ -289,27 +291,72 @@ def handle_research(args):
         )
         engine.close()
 
-        # Display discovered signals
-        if result.sources_discovered:
-            sig_table = Table(title=f"Discovered Problem Signals ({len(result.sources_discovered)} public items)", show_header=True, header_style="bold blue")
-            sig_table.add_column("Source", style="bold")
-            sig_table.add_column("Query", style="dim")
-            sig_table.add_column("Published", style="cyan")
-            sig_table.add_column("Title")
-            sig_table.add_column("Public URL", style="dim")
+        # Display 6 separate evidence retrieval & independence audit metrics (Task 5)
+        metric_summary = (
+            f"[bold]Evidence Retrieval & Independence Audit:[/bold]\n"
+            f"  • Total Retrieved Records: [bold]{result.total_retrieved_count}[/bold]\n"
+            f"  • Unique URLs: [bold]{result.unique_url_count}[/bold]\n"
+            f"  • Unique Content Items (Deduplicated): [bold]{result.unique_content_count}[/bold]\n"
+            f"  • Unique Identified Publishers: [bold]{result.unique_publisher_count}[/bold]\n"
+            f"  • Confirmed Independent Reports: [bold green]{result.confirmed_independent_count}[/bold green] "
+            f"({result.fetch_verified_count} fetched, {result.api_verified_count} API)\n"
+            f"  • Unknown Independence: [bold yellow]{result.unknown_independence_count}[/bold yellow] "
+            f"({result.snippet_unfetched_count} unfetched snippets, {max(0, result.unknown_independence_count - result.snippet_unfetched_count)} unattributed)"
+        )
+        console.print(Panel(metric_summary, title="Autonomous Evidence Provenance Metrics", border_style="cyan"))
 
-            for src in result.sources_discovered[:10]:
+        if result.snippet_unfetched_count > 0:
+            console.print(
+                f"[yellow]Notice: {result.snippet_unfetched_count} snippet-only source(s) retained as discovery leads; "
+                f"destination pages not fetched.[/yellow]\n"
+            )
+
+        # Display discovered signals with explicit status colors and publisher
+        if result.sources_discovered:
+            sig_table = Table(
+                title=f"Discovered Problem Signals ({len(result.sources_discovered)} retained, {result.confirmed_independent_count} confirmed independent)",
+                show_header=True,
+                header_style="bold blue",
+            )
+            sig_table.add_column("Status", no_wrap=True)
+            sig_table.add_column("Source", style="bold", no_wrap=True)
+            sig_table.add_column("Org/Publisher", style="cyan", no_wrap=True)
+            sig_table.add_column("Title")
+            sig_table.add_column("Date", no_wrap=True)
+            sig_table.add_column("Confidence", justify="right", no_wrap=True)
+
+            for src in result.sources_discovered[:15]:
                 pub_str = src.published_date or "[dim]Undated[/dim]"
+                stat = src.verification_status
+                if stat in (SourceVerificationStatus.FETCH_VERIFIED, SourceVerificationStatus.REDIRECTED_AND_VERIFIED):
+                    stat_str = f"[green]{stat.value}[/green]"
+                elif stat == SourceVerificationStatus.API_VERIFIED:
+                    stat_str = f"[cyan]{stat.value}[/cyan]"
+                elif stat == SourceVerificationStatus.SNIPPET_UNFETCHED:
+                    stat_str = f"[yellow]{stat.value}[/yellow]"
+                elif stat == SourceVerificationStatus.VERIFIED:
+                    stat_str = f"[green]{stat.value}[/green]"
+                else:
+                    stat_str = f"[red]{stat.value if stat else 'UNKNOWN'}[/red]"
+
+                org_str = src.publisher_org or "[dim]unknown[/dim]"
+                conf_val, _ = calculate_source_evidence_confidence(src)
+
                 sig_table.add_row(
+                    stat_str,
                     src.source_name,
-                    src.query[:25],
-                    pub_str,
+                    org_str[:25],
                     src.title[:45] + ("..." if len(src.title) > 45 else ""),
-                    src.url[:40] + ("..." if len(src.url) > 40 else ""),
+                    pub_str,
+                    f"{conf_val:.2f}",
                 )
             console.print(sig_table)
         else:
             console.print("[yellow]No problem signals retrieved from permitted sources for current queries.[/yellow]")
+
+        if result.sources_rejected:
+            rej_summary_str = ", ".join(f"{k}: {v}" for k, v in result.rejection_summary.items())
+            console.print(f"[dim]Rejected low-quality or irrelevant sources ({len(result.sources_rejected)} total: {rej_summary_str})[/dim]\n")
 
         # Display synthesized opportunity candidates
         if result.offers_synthesized:
@@ -343,10 +390,14 @@ def handle_research(args):
             console.print(Panel.fit(f"[bold]Top Ranked Candidate:[/bold] {top_off.title} ({top_off.id})", border_style="cyan"))
             console.print(f"[bold]Target Buyer:[/bold] {top_off.buyer_profile}")
             console.print(f"[bold]Problem Statement:[/bold] {top_off.problem_statement}")
+            console.print(f"[bold]Independent Source Reports:[/bold] {top_off.independent_report_count}")
+            console.print(f"[bold]WTP Evidence Status:[/bold] {top_off.wtp_evidence_summary or 'Unvalidated'}")
             console.print(f"[bold]Proposed Pilot Deliverable:[/bold] {top_off.proposed_deliverable}")
             console.print(f"[bold]Plausible Pricing / Pilot:[/bold] {top_off.plausible_pricing_or_pilot}")
             console.print(f"[bold]Delivery Method:[/bold] {top_off.delivery_method}")
             console.print(f"[bold]Linked Evidence IDs:[/bold] {', '.join(top_off.evidence_ids)}")
+            if top_off.unknowns_requiring_validation:
+                console.print(f"[bold]Key Validation Unknowns:[/bold] {', '.join(top_off.unknowns_requiring_validation)}")
 
             if top_off.evaluation:
                 console.print(f"\n[bold]Weighted Score:[/bold] {top_off.evaluation.weighted_score:.2f} / 5.0")

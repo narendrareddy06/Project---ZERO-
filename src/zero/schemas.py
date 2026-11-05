@@ -135,6 +135,11 @@ class OfferCandidate(BaseModel):
     evidence_ids: List[str] = Field(default_factory=list, description="Linked evidence IDs")
     evaluation: Optional[EvaluationResult] = None
     is_sample: bool = Field(default=False, description="Whether this offer candidate is synthetic demonstration/sample data")
+    independent_report_count: int = Field(default=1, description="Number of distinct independent source reports supporting this opportunity")
+    unknown_independence_count: int = Field(default=0, description="Count of sources where independence could not be established")
+    unknowns_requiring_validation: List[str] = Field(default_factory=list, description="Explicit unknowns requiring market validation")
+    problem_severity_evidence: Optional[str] = Field(None, description="Direct summary of problem severity from supporting evidence")
+    wtp_evidence_summary: Optional[str] = Field(None, description="Summary of commercial willingness-to-pay evidence or explicit unknown status")
 
 
 class RunState(str, Enum):
@@ -208,17 +213,40 @@ class ResearchExcerpt(BaseModel):
     is_conflicting: bool = False
 
 
+class SourceVerificationStatus(str, Enum):
+    """Result status of source verification check."""
+    FETCH_VERIFIED = "FETCH_VERIFIED"                    # Destination page successfully retrieved (HTTP 200) and content inspected
+    REDIRECTED_AND_VERIFIED = "REDIRECTED_AND_VERIFIED"  # Destination page followed redirect (HTTP 200) and content inspected
+    API_VERIFIED = "API_VERIFIED"                        # Verified directly from recognized API response (e.g. Algolia, GitHub)
+    SNIPPET_UNFETCHED = "SNIPPET_UNFETCHED"              # Search snippet contains pain signals but destination could not be fetched
+    # Backward compatibility
+    VERIFIED = "VERIFIED"                                # Legacy general verified status
+    UNAVAILABLE = "UNAVAILABLE"                          # Connection failed, timed out, robots disallowed, or blocked
+    HTTP_ERROR = "HTTP_ERROR"                            # HTTP 4xx or 5xx response
+    EMPTY_CONTENT = "EMPTY_CONTENT"                      # Body content empty or < 50 characters
+    IRRELEVANT = "IRRELEVANT"                            # Generic domain, tutorial, or lacks business pain signals
+    NEEDS_MANUAL_REVIEW = "NEEDS_MANUAL_REVIEW"          # Login or paywall gate detected
+
+
 class DiscoveredSource(BaseModel):
     """A raw discovery finding retrieved from a permitted public source adapter."""
     source_name: str = Field(..., description="Name of source adapter (e.g. hn_algolia, github_issues)")
     title: str = Field(..., min_length=2, description="Title of the post, issue, or discussion")
     url: str = Field(..., description="Public canonical URL of the finding")
+    original_url: Optional[str] = Field(None, description="Original discovered URL before redirects")
     excerpt: str = Field(default="", description="Relevant text excerpt describing the problem or need")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="UTC timestamp of discovery/publication")
     published_date: Optional[str] = Field(None, description="Extracted source publication date string if available; None if undated")
     author: Optional[str] = Field(None, description="Author handle or username if publicly visible")
     query: str = Field(default="", description="Search query string that discovered this source")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional source-specific metadata")
+    verification_status: Optional[SourceVerificationStatus] = Field(None, description="Status of source verification check")
+    rejection_reason: Optional[str] = Field(None, description="Reason if source was rejected or flagged")
+    http_status: Optional[int] = Field(None, description="HTTP status code from verification")
+    raw_content: Optional[str] = Field(None, description="Extracted clean text content from page")
+    api_provider: Optional[str] = Field(None, description="Recognized API provider name if API_VERIFIED")
+    api_record_id: Optional[str] = Field(None, description="Original record ID from the API")
+    publisher_org: Optional[str] = Field(None, description="Identifiable publisher organization or domain entity")
 
 
 class ProspectStatus(str, Enum):

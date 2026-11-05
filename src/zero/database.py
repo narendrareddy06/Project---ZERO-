@@ -88,7 +88,12 @@ class Database:
                     risks_json TEXT NOT NULL,
                     evidence_ids_json TEXT NOT NULL,
                     evaluation_json TEXT,
-                    is_sample INTEGER DEFAULT 0
+                    is_sample INTEGER DEFAULT 0,
+                    independent_report_count INTEGER DEFAULT 1,
+                    unknown_independence_count INTEGER DEFAULT 0,
+                    unknowns_requiring_validation_json TEXT,
+                    problem_severity_evidence TEXT,
+                    wtp_evidence_summary TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS audit_events (
@@ -156,6 +161,19 @@ class Database:
                 conn.execute("ALTER TABLE evidence ADD COLUMN excerpt TEXT")
             if "retrieved_at" not in ev_cols:
                 conn.execute("ALTER TABLE evidence ADD COLUMN retrieved_at TEXT")
+
+            cursor = conn.execute("PRAGMA table_info(offers)")
+            off_cols = {r["name"] for r in cursor.fetchall()}
+            if "independent_report_count" not in off_cols:
+                conn.execute("ALTER TABLE offers ADD COLUMN independent_report_count INTEGER DEFAULT 1")
+            if "unknown_independence_count" not in off_cols:
+                conn.execute("ALTER TABLE offers ADD COLUMN unknown_independence_count INTEGER DEFAULT 0")
+            if "unknowns_requiring_validation_json" not in off_cols:
+                conn.execute("ALTER TABLE offers ADD COLUMN unknowns_requiring_validation_json TEXT")
+            if "problem_severity_evidence" not in off_cols:
+                conn.execute("ALTER TABLE offers ADD COLUMN problem_severity_evidence TEXT")
+            if "wtp_evidence_summary" not in off_cols:
+                conn.execute("ALTER TABLE offers ADD COLUMN wtp_evidence_summary TEXT")
 
     @property
     def audit(self) -> AuditManager:
@@ -313,8 +331,8 @@ class Database:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO offers 
-                (id, title, target_geography, buyer_profile, problem_statement, proposed_deliverable, plausible_pricing_or_pilot, delivery_method, risks_json, evidence_ids_json, evaluation_json, is_sample)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, target_geography, buyer_profile, problem_statement, proposed_deliverable, plausible_pricing_or_pilot, delivery_method, risks_json, evidence_ids_json, evaluation_json, is_sample, independent_report_count, unknown_independence_count, unknowns_requiring_validation_json, problem_severity_evidence, wtp_evidence_summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     offer.id,
@@ -329,6 +347,11 @@ class Database:
                     json.dumps(offer.evidence_ids),
                     json.dumps(offer.evaluation.model_dump()) if offer.evaluation else None,
                     1 if offer.is_sample else 0,
+                    offer.independent_report_count,
+                    offer.unknown_independence_count,
+                    json.dumps(offer.unknowns_requiring_validation),
+                    offer.problem_severity_evidence,
+                    offer.wtp_evidence_summary,
                 ),
             )
         self.audit.record_event(
@@ -365,6 +388,11 @@ class Database:
             evidence_ids=json.loads(row["evidence_ids_json"]),
             evaluation=eval_data,
             is_sample=bool(row["is_sample"]) if "is_sample" in row.keys() else False,
+            independent_report_count=row["independent_report_count"] if ("independent_report_count" in row.keys() and row["independent_report_count"] is not None) else 1,
+            unknown_independence_count=row["unknown_independence_count"] if ("unknown_independence_count" in row.keys() and row["unknown_independence_count"] is not None) else 0,
+            unknowns_requiring_validation=json.loads(row["unknowns_requiring_validation_json"]) if ("unknowns_requiring_validation_json" in row.keys() and row["unknowns_requiring_validation_json"]) else [],
+            problem_severity_evidence=row["problem_severity_evidence"] if "problem_severity_evidence" in row.keys() else None,
+            wtp_evidence_summary=row["wtp_evidence_summary"] if "wtp_evidence_summary" in row.keys() else None,
         )
 
     def list_offers(
@@ -401,6 +429,11 @@ class Database:
                     evidence_ids=json.loads(r["evidence_ids_json"]),
                     evaluation=eval_data,
                     is_sample=bool(r["is_sample"]) if "is_sample" in r.keys() else False,
+                    independent_report_count=r["independent_report_count"] if ("independent_report_count" in r.keys() and r["independent_report_count"] is not None) else 1,
+                    unknown_independence_count=r["unknown_independence_count"] if ("unknown_independence_count" in r.keys() and r["unknown_independence_count"] is not None) else 0,
+                    unknowns_requiring_validation=json.loads(r["unknowns_requiring_validation_json"]) if ("unknowns_requiring_validation_json" in r.keys() and r["unknowns_requiring_validation_json"]) else [],
+                    problem_severity_evidence=r["problem_severity_evidence"] if "problem_severity_evidence" in r.keys() else None,
+                    wtp_evidence_summary=r["wtp_evidence_summary"] if "wtp_evidence_summary" in r.keys() else None,
                 )
             )
         return result

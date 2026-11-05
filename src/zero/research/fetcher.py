@@ -23,11 +23,13 @@ import urllib.robotparser
 import httpx
 
 from zero.schemas import (
+    DiscoveredSource,
     Evidence,
     EvidenceType,
     FetchStatus,
     Geography,
     ResearchExcerpt,
+    SourceVerificationStatus,
 )
 
 DEFAULT_USER_AGENT = (
@@ -47,6 +49,7 @@ class HTMLTextExtractor(html.parser.HTMLParser):
         self._ignored_tags = {"script", "style", "svg", "noscript"}
         self.title: Optional[str] = None
         self.meta_description: Optional[str] = None
+        self.published_date: Optional[str] = None
         self._in_title = False
         self.has_password_field = False
 
@@ -60,14 +63,30 @@ class HTMLTextExtractor(html.parser.HTMLParser):
             attrs_dict = {k.lower(): (v.lower() if v else "") for k, v in attrs}
             if attrs_dict.get("type") == "password":
                 self.has_password_field = True
+        elif tag_lower == "time":
+            attrs_dict = {k.lower(): (v.strip() if v else "") for k, v in attrs}
+            dt = attrs_dict.get("datetime", "")
+            if dt and not self.published_date:
+                self.published_date = dt
         elif tag_lower == "meta":
             attrs_dict = {k.lower(): (v if v else "") for k, v in attrs}
             name_val = attrs_dict.get("name", "").lower()
             prop_val = attrs_dict.get("property", "").lower()
+            itemprop_val = attrs_dict.get("itemprop", "").lower()
+            content_val = attrs_dict.get("content", "").strip()
+
             if name_val == "description" or prop_val == "og:description":
-                content_val = attrs_dict.get("content", "").strip()
                 if content_val and not self.meta_description:
                     self.meta_description = content_val
+
+            # Authentic publication date extraction from standard HTML metadata
+            date_meta_keys = {
+                "article:published_time", "og:published_time", "date", "pubdate",
+                "publication_date", "sailthru.date", "parsely-pub-date",
+            }
+            if (name_val in date_meta_keys or prop_val in date_meta_keys or itemprop_val == "datepublished") and content_val:
+                if not self.published_date:
+                    self.published_date = content_val
 
     def handle_endtag(self, tag: str):
         tag_lower = tag.lower()
@@ -120,6 +139,9 @@ class PublicWebResearcher:
         self._robots_cache: Dict[str, urllib.robotparser.RobotFileParser] = {}
         self._last_domain_request: Dict[str, float] = {}
         self.last_meta_description: Optional[str] = None
+        self.last_final_url: Optional[str] = None
+        self.last_was_redirected: bool = False
+        self.last_published_date: Optional[str] = None
 
     def close(self):
         """Close the underlying HTTP client session."""
@@ -212,6 +234,9 @@ class PublicWebResearcher:
         except Exception as e:
             return FetchStatus.CONNECTION_FAILED, None, None, 0, f"Unexpected retrieval failure: {str(e)}"
 
+        self.last_final_url = str(resp.url) if hasattr(resp, "url") and resp.url else url
+        self.last_was_redirected = bool(getattr(resp, "history", None))
+
         status_code = resp.status_code
         if status_code >= 400:
             return FetchStatus.HTTP_ERROR, None, None, status_code, f"HTTP {status_code} error response"
@@ -228,6 +253,7 @@ class PublicWebResearcher:
             return FetchStatus.NON_HTML, None, None, status_code, f"HTML parsing error: {str(e)}"
 
         self.last_meta_description = parser.meta_description
+        self.last_published_date = getattr(parser, "published_date", None)
 
         # Detect paywalls or mandatory login forms
         if parser.has_password_field:
@@ -466,3 +492,184 @@ class PublicWebResearcher:
             )
 
         return excerpt_obj, evidence_obj
+
+
+class SourceVerifier:
+    """
+    Verifies discovered public sources for Project ZERO.
+
+    Enforces Task 3 verification rules:
+    - Preserves original discovered URL.
+    - Resolves redirects and records final canonical URL.
+    - Retrieves actual page content.
+    - Checks HTTP status and extraction success.
+    - Identifies authentic publication date if available (never fabricates).
+    - Rejects irrelevant or empty pages and stores exact rejection reason.
+    - Assigns explicit SourceVerificationStatus.
+    """
+
+    IRRELEVANT_DOMAINS = {
+        "wikipedia.org",
+        "w3schools.com",
+        "dictionary.com",
+        "investopedia.com",
+        "coursera.org",
+        "udemy.com",
+        "policies.google.com",
+        "support.apple.com",
+        "support.google.com",
+    }
+
+    BUSINESS_PAIN_SIGNALS = {
+        "error", "errors", "fail", "failed", "failing", "failure", "failures",
+        "problem", "problems", "issue", "issues", "bug", "bugs",
+        "manual", "manually", "reconcil", "reconciliation", "bottleneck", "bottlenecks",
+        "broken", "slow", "delay", "delays", "friction", "drop", "dropped", "dropouts",
+        "cost", "costs", "billing", "expensive", "waste", "struggle", "struggling",
+        "nightmare", "overspend", "overrun", "churn", "complaint", "complaints",
+        "headache", "leak", "vulnerability", "lost deals", "lost revenue", "bounce",
+        "bounces", "spam", "inbox placement", "sync error", "outage", "timeout",
+        "downtime", "backlog", "unattached", "orphaned", "discrepanc",
+    }
+
+    def __init__(self, researcher: Optional[PublicWebResearcher] = None):
+        self.researcher = researcher or PublicWebResearcher(check_robots=True)
+        self._owns_researcher = researcher is None
+
+    def close(self):
+        if self._owns_researcher and self.researcher:
+            self.researcher.close()
+
+    def verify(
+        self,
+        source: DiscoveredSource,
+        fetch_remote: bool = True,
+    ) -> DiscoveredSource:
+        """
+        Verify a single discovered source. Updates source fields and returns it.
+        """
+        # 1. Preserve original URL before any redirection
+        if not source.original_url:
+            source.original_url = source.url
+
+        # 2. Check for irrelevant reference/educational domains upfront
+        parsed = urlparse(source.url)
+        netloc = parsed.netloc.lower()
+        if any(bad in netloc for bad in self.IRRELEVANT_DOMAINS):
+            source.verification_status = SourceVerificationStatus.IRRELEVANT
+            source.rejection_reason = (
+                f"Generic reference or educational domain '{netloc}' lacks empirical B2B customer problem signals"
+            )
+            return source
+
+        # Check for generic root homepages without problem discussion in path or title
+        clean_path = parsed.path.strip("/")
+        if not clean_path and not any(sig in source.title.lower() for sig in self.BUSINESS_PAIN_SIGNALS):
+            source.verification_status = SourceVerificationStatus.IRRELEVANT
+            source.rejection_reason = "Generic corporate root homepage without explicit business problem discussion"
+            return source
+
+        # 3. If status already explicitly established (e.g., pre-verified mock), return
+        if source.verification_status is not None:
+            return source
+
+        # 4. Remote content retrieval and verification
+        if fetch_remote and source.url.startswith(("http://", "https://")):
+            status, title, clean_text, http_code, msg = self.researcher.fetch_page(source.url)
+            source.http_status = http_code
+
+            # Resolve redirects
+            final_url = self.researcher.last_final_url or source.url
+            was_redirected = self.researcher.last_was_redirected or (final_url != source.original_url)
+            source.url = final_url
+
+            # Extract authentic publication date from page metadata if available and not yet set
+            if self.researcher.last_published_date and not source.published_date:
+                source.published_date = self.researcher.last_published_date
+
+            if status in (FetchStatus.TIMEOUT, FetchStatus.CONNECTION_FAILED):
+                # If network connection/DNS fails (e.g. offline sandbox or unreached host),
+                # check if the source already has a valid extracted snippet with authentic pain signals.
+                # Task 1 & Task 6 rule: Snippet-only fallback must NEVER be classified as FETCH_VERIFIED or VERIFIED.
+                content_text = source.raw_content or source.excerpt or ""
+                if len(content_text.strip()) >= 20:
+                    text_to_check = f"{source.title} {content_text}".lower()
+                    matched_signals = [sig for sig in self.BUSINESS_PAIN_SIGNALS if sig in text_to_check]
+                    if matched_signals:
+                        source.verification_status = SourceVerificationStatus.SNIPPET_UNFETCHED
+                        source.rejection_reason = None
+                        source.metadata["network_note"] = f"Network unreached ({msg}); preserved search snippet for discovery (unfetched)"
+                        return source
+
+                source.verification_status = SourceVerificationStatus.UNAVAILABLE
+                source.rejection_reason = f"Connection failed or timed out: {msg}"
+                return source
+
+            if status == FetchStatus.HTTP_ERROR:
+                source.verification_status = SourceVerificationStatus.HTTP_ERROR
+                source.rejection_reason = f"HTTP {http_code} error response"
+                return source
+
+            if status in (FetchStatus.ROBOTS_DISALLOWED, FetchStatus.BLOCKED_DOMAIN):
+                source.verification_status = SourceVerificationStatus.UNAVAILABLE
+                source.rejection_reason = msg
+                return source
+
+            if status == FetchStatus.LOGIN_OR_PAYWALL_DETECTED:
+                source.verification_status = SourceVerificationStatus.NEEDS_MANUAL_REVIEW
+                source.rejection_reason = f"Authentication or paywall detected: {msg}"
+                return source
+
+            if not clean_text or len(clean_text.strip()) < 50:
+                source.verification_status = SourceVerificationStatus.EMPTY_CONTENT
+                source.rejection_reason = "Page body has empty or negligible static text content (< 50 characters)"
+                return source
+
+            # Check for authentic business problem signals in retrieved body text (rejects misleading clickbait titles)
+            source.raw_content = clean_text
+            matched_signals = [sig for sig in self.BUSINESS_PAIN_SIGNALS if sig in clean_text.lower()]
+
+            if not matched_signals:
+                source.verification_status = SourceVerificationStatus.IRRELEVANT
+                source.rejection_reason = (
+                    "Retrieved content body lacks any B2B operational friction, error, or business pain signals "
+                    "(title may be misleading, promotional, or clickbait)"
+                )
+                return source
+
+            # Enrich excerpt from content if original snippet was short
+            if len(source.excerpt.strip()) < 80:
+                paras = [p.strip() for p in clean_text.split("\n") if len(p.strip()) > 40]
+                for p in paras:
+                    if any(sig in p.lower() for sig in self.BUSINESS_PAIN_SIGNALS):
+                        source.excerpt = p[:500]
+                        break
+
+            source.verification_status = (
+                SourceVerificationStatus.REDIRECTED_AND_VERIFIED
+                if was_redirected
+                else SourceVerificationStatus.FETCH_VERIFIED
+            )
+            source.rejection_reason = None
+            return source
+
+        # 5. Local verification from pre-retrieved content or API excerpts (when fetch_remote=False)
+        content_text = source.raw_content or source.excerpt or ""
+        if len(content_text.strip()) < 20:
+            source.verification_status = SourceVerificationStatus.EMPTY_CONTENT
+            source.rejection_reason = "Source excerpt and content are empty or negligible"
+            return source
+
+        text_to_check = f"{source.title} {content_text}".lower()
+        matched_signals = [sig for sig in self.BUSINESS_PAIN_SIGNALS if sig in text_to_check]
+        if not matched_signals:
+            source.verification_status = SourceVerificationStatus.IRRELEVANT
+            source.rejection_reason = "Source title and excerpt lack B2B business problem signals"
+            return source
+
+        if source.api_provider:
+            source.verification_status = SourceVerificationStatus.API_VERIFIED
+        else:
+            source.verification_status = SourceVerificationStatus.SNIPPET_UNFETCHED
+        source.rejection_reason = None
+        return source

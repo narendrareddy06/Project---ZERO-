@@ -21,7 +21,7 @@ import httpx
 
 from zero.research.fetcher import DEFAULT_USER_AGENT
 from zero.research.wigolo_client import WigoloMcpClient
-from zero.schemas import DiscoveredSource
+from zero.schemas import DiscoveredSource, SourceVerificationStatus
 
 
 def clean_html_snippet(raw_html: str) -> str:
@@ -148,10 +148,14 @@ class HnAlgoliaSource(DiscoverySourceAdapter):
                         source_name=self.name,
                         title=title.strip(),
                         url=raw_url.strip(),
+                        original_url=raw_url.strip(),
                         excerpt=excerpt.strip(),
                         created_at=created_at,
                         author=author,
                         query=query,
+                        verification_status=SourceVerificationStatus.API_VERIFIED,
+                        api_provider="hn_algolia",
+                        api_record_id=str(obj_id) if obj_id else None,
                         metadata={
                             "points": hit.get("points", 0),
                             "num_comments": hit.get("num_comments", 0),
@@ -256,15 +260,20 @@ class GitHubIssuesSource(DiscoverySourceAdapter):
                 else:
                     created_at = datetime.now(timezone.utc)
 
+                issue_id = f"{item.get('repository_url', '')}#{item.get('number', item.get('comments', 0))}"
                 results.append(
                     DiscoveredSource(
                         source_name=self.name,
                         title=title.strip(),
                         url=html_url.strip(),
+                        original_url=html_url.strip(),
                         excerpt=excerpt.strip(),
                         created_at=created_at,
                         author=author,
                         query=query,
+                        verification_status=SourceVerificationStatus.API_VERIFIED,
+                        api_provider="github_issues",
+                        api_record_id=issue_id,
                         metadata={
                             "comments": item.get("comments", 0),
                             "state": item.get("state", "open"),
@@ -299,9 +308,13 @@ class WigoloDiscoverySource(DiscoverySourceAdapter):
         self,
         client: Optional[WigoloMcpClient] = None,
         enrich_with_fetch: bool = False,
+        search_depth: str = "basic",
+        include_content: bool = True,
     ):
         self._owns_client = client is None
         self.enrich_with_fetch = enrich_with_fetch
+        self.search_depth = search_depth
+        self.include_content = include_content
         if client is not None:
             self._client = client
         else:
@@ -324,8 +337,8 @@ class WigoloDiscoverySource(DiscoverySourceAdapter):
             data = self._client.search(
                 query=query,
                 max_results=limit,
-                search_depth="fast",
-                include_content=False,
+                search_depth=self.search_depth,
+                include_content=self.include_content,
             )
         except Exception:
             return []
@@ -334,14 +347,24 @@ class WigoloDiscoverySource(DiscoverySourceAdapter):
         if not raw_results:
             return []
 
+        # Filter out generic reference, encyclopedia, or educational sites that do not represent B2B buyer problems
+        excluded_domains = {
+            "wikipedia.org", "w3schools.com", "dictionary.com", "investopedia.com",
+            "coursera.org", "udemy.com", "policies.google.com",
+        }
+
         findings: List[DiscoveredSource] = []
         for item in raw_results:
             raw_url = item.get("url") or ""
             if not (raw_url.startswith("http://") or raw_url.startswith("https://")):
                 continue
 
+            lower_url = raw_url.lower()
+            if any(ex in lower_url for ex in excluded_domains):
+                continue
+
             raw_title = item.get("title") or "Public Web Finding"
-            snippet = item.get("snippet") or ""
+            snippet = item.get("snippet") or item.get("content") or ""
 
             # Optionally enrich with fetch if snippet is minimal and client is available
             if self.enrich_with_fetch and len(snippet.strip()) < 80 and self._client:
@@ -356,16 +379,20 @@ class WigoloDiscoverySource(DiscoverySourceAdapter):
             if not pub_date or str(pub_date).lower() in ("none", "null", "unknown", ""):
                 pub_date = None
 
+            raw_body = item.get("content") or item.get("markdown") or None
+
             findings.append(
                 DiscoveredSource(
                     source_name=self.name,
                     title=clean_html_snippet(raw_title).strip() or "Public Web Finding",
                     url=raw_url.strip(),
+                    original_url=raw_url.strip(),
                     excerpt=clean_html_snippet(snippet).strip()[:600],
                     created_at=datetime.now(timezone.utc),
                     published_date=pub_date,
                     author=item.get("author") or "public_web",
                     query=query,
+                    raw_content=raw_body,
                     metadata={
                         "evidence_score": item.get("evidence_score", {}),
                         "relevance_score": item.get("relevance_score", 0.0),
